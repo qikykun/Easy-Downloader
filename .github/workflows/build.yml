@@ -1,0 +1,458 @@
+name: Build APK
+on: [push, workflow_dispatch]
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.7
+      - name: Buat proyek
+        run: |
+          mkdir -p app/src/main/java/com/pribadi/easydl
+          cat > settings.gradle.kts <<'EOF'
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement { repositories { google(); mavenCentral() } }
+          rootProject.name = "EasyDownloader"
+          include(":app")
+          EOF
+          cat > build.gradle.kts <<'EOF'
+          plugins {
+              id("com.android.application") version "8.5.2" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.24" apply false
+          }
+          EOF
+          cat > app/build.gradle.kts <<'EOF'
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+          android {
+              namespace = "com.pribadi.easydl"
+              compileSdk = 34
+              defaultConfig {
+                  applicationId = "com.pribadi.easydl"
+                  minSdk = 29
+                  targetSdk = 34
+                  versionCode = 1
+                  versionName = "1.0"
+              }
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions { jvmTarget = "17" }
+          }
+          EOF
+          cat > app/src/main/AndroidManifest.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.INTERNET" />
+              <application
+                  android:label="Easy Downloader"
+                  android:usesCleartextTraffic="true"
+                  android:theme="@android:style/Theme.Material.Light.NoActionBar">
+                  <activity android:name=".MainActivity" android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+          cat > app/src/main/java/com/pribadi/easydl/MainActivity.kt <<'EOF'
+          package com.pribadi.easydl
+
+          import android.app.Activity
+          import android.content.ClipboardManager
+          import android.content.ContentValues
+          import android.graphics.BitmapFactory
+          import android.graphics.Color
+          import android.os.Bundle
+          import android.os.Handler
+          import android.os.Looper
+          import android.provider.MediaStore
+          import android.view.Gravity
+          import android.view.View
+          import android.webkit.CookieManager
+          import android.webkit.JavascriptInterface
+          import android.webkit.WebResourceRequest
+          import android.webkit.WebView
+          import android.webkit.WebViewClient
+          import android.widget.*
+          import org.json.JSONArray
+          import org.json.JSONObject
+          import java.net.HttpURLConnection
+          import java.net.URL
+
+          class Media(val url: String, val video: Boolean, val thumb: String, val ref: String = "")
+
+          class MainActivity : Activity() {
+              private lateinit var input: EditText
+              private lateinit var status: TextView
+              private lateinit var list: LinearLayout
+              private lateinit var btn: Button
+              private lateinit var web: WebView
+              private var allBox: CheckBox? = null
+              private var bulk = false
+              private var chosen = BooleanArray(0)
+              private val items = ArrayList<Media>()
+              private val overlays = ArrayList<View>()
+              private val captured = ArrayList<String>()
+              private val seen = HashSet<Int>()
+              private val handler = Handler(Looper.getMainLooper())
+              private var gen = 0
+              private var lastLink = ""
+              private val UA = "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36"
+
+              private val SCRIPTS = """Array.from(document.querySelectorAll('script[type="application/json"]')).forEach(function(s){var t=s.textContent;if(t.indexOf('itemStruct')>-1)B.put(t)})"""
+
+              inner class Bridge {
+                  @JavascriptInterface
+                  fun put(s: String) {
+                      synchronized(captured) { if (seen.add(s.hashCode())) captured.add(s) }
+                  }
+              }
+
+              private fun dp(n: Int) = (n * resources.displayMetrics.density).toInt()
+
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  input = EditText(this).apply { hint = "Link TikTok / X"; setSingleLine() }
+                  status = TextView(this).apply {
+                      text = "Salin link TikTok atau X, lalu buka aplikasi ini."
+                      setPadding(0, dp(8), 0, dp(8))
+                  }
+                  list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+                  btn = Button(this).apply {
+                      text = "Download"
+                      isEnabled = false
+                      setOnClickListener { download() }
+                  }
+                  web = WebView(this)
+                  web.settings.javaScriptEnabled = true
+                  web.settings.domStorageEnabled = true
+                  web.settings.userAgentString = UA
+                  web.addJavascriptInterface(Bridge(), "B")
+                  web.webViewClient = object : WebViewClient() {
+                      override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+                          val s = request.url.scheme
+                          return s != "http" && s != "https"
+                      }
+                  }
+                  val scroll = ScrollView(this).apply { addView(list) }
+                  setContentView(LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setPadding(dp(16), dp(40), dp(16), dp(16))
+                      addView(input)
+                      addView(status)
+                      addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
+                      addView(btn)
+                      addView(web, LinearLayout.LayoutParams(1, 1))
+                  })
+              }
+
+              override fun onWindowFocusChanged(hasFocus: Boolean) {
+                  super.onWindowFocusChanged(hasFocus)
+                  if (!hasFocus) return
+                  val cm = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
+                  val text = cm.primaryClip?.takeIf { it.itemCount > 0 }
+                      ?.getItemAt(0)?.coerceToText(this)?.toString() ?: return
+                  val link = Regex("https?://(?:[\\w-]+\\.)?(?:tiktok\\.com|x\\.com|twitter\\.com)/\\S+").find(text)?.value ?: return
+                  if (link == lastLink) return
+                  lastLink = link
+                  input.setText(link)
+                  load(link)
+              }
+
+              private fun say(s: String) = runOnUiThread { status.text = s }
+
+              private fun open(u: String, ref: String): HttpURLConnection {
+                  val c = URL(u).openConnection() as HttpURLConnection
+                  c.setRequestProperty("User-Agent", UA)
+                  if (ref.isNotEmpty()) {
+                      c.setRequestProperty("Referer", ref)
+                      CookieManager.getInstance().getCookie(u)?.let { c.setRequestProperty("Cookie", it) }
+                  }
+                  c.connectTimeout = 20000
+                  c.readTimeout = 30000
+                  return c
+              }
+
+              private fun load(link: String) {
+                  list.removeAllViews()
+                  btn.isEnabled = false
+                  val isX = Regex("https?://(?:[\\w-]+\\.)?(?:x|twitter)\\.com/").containsMatchIn(link)
+                  if (isX) {
+                      val id = Regex("/status(?:es)?/(\\d+)").find(link)?.groupValues?.get(1)
+                      if (id == null) {
+                          lastLink = ""
+                          say("Link X tidak dikenali. Pakai link postingan (yang ada /status/angka).")
+                          return
+                      }
+                      loadX(id)
+                  } else {
+                      loadTikTok(link)
+                  }
+              }
+
+              // ---------- X ----------
+              private fun loadX(id: String) {
+                  say("Mengambil dari X...")
+                  val my = ++gen
+                  val js = """(function(){return ((Number('$id')/1e15)*Math.PI).toString(36).replace(/(0+|\.)/g,'')})()"""
+                  web.evaluateJavascript(js) { r ->
+                      val token = (r ?: "").trim('"')
+                      Thread {
+                          try {
+                              val c = open("https://cdn.syndication.twimg.com/tweet-result?id=$id&lang=en&token=$token", "")
+                              val body = c.inputStream.bufferedReader().readText()
+                              val found = parseX(body)
+                              runOnUiThread {
+                                  if (my == gen) {
+                                      if (found.isEmpty()) {
+                                          lastLink = ""
+                                          say("Foto/video tidak ditemukan. Postingan mungkin tanpa media, dibatasi, atau berkonten sensitif.")
+                                      } else show(found)
+                                  }
+                              }
+                          } catch (e: Exception) {
+                              lastLink = ""
+                              say("Gagal: ${e.message}")
+                          }
+                      }.start()
+                  }
+              }
+
+              private fun parseX(text: String): List<Media> {
+                  val md = JSONObject(text).optJSONArray("mediaDetails") ?: return emptyList()
+                  val out = ArrayList<Media>()
+                  for (i in 0 until md.length()) {
+                      val m = md.optJSONObject(i) ?: continue
+                      val base = m.optString("media_url_https")
+                      val thumb = if (base.isEmpty()) "" else "$base?name=small"
+                      if (m.optString("type") == "photo") {
+                          if (base.isNotEmpty()) out.add(Media("$base?name=orig", false, thumb))
+                      } else {
+                          val vs = m.optJSONObject("video_info")?.optJSONArray("variants") ?: continue
+                          var best = ""
+                          var br = -1L
+                          for (k in 0 until vs.length()) {
+                              val v = vs.optJSONObject(k) ?: continue
+                              if (v.optString("content_type") != "video/mp4") continue
+                              val b = v.optLong("bitrate")
+                              if (b > br) { br = b; best = v.optString("url") }
+                          }
+                          if (best.isNotEmpty()) out.add(Media(best, true, thumb))
+                      }
+                  }
+                  return out
+              }
+
+              // ---------- TikTok ----------
+              private fun loadTikTok(link: String) {
+                  say("Membuka TikTok... (tunggu sampai 25 detik)")
+                  synchronized(captured) { captured.clear(); seen.clear() }
+                  val my = ++gen
+                  web.loadUrl(link)
+                  poll(my, 0)
+              }
+
+              private fun poll(my: Int, tick: Int) {
+                  if (my != gen) return
+                  web.evaluateJavascript(SCRIPTS, null)
+                  val docs = synchronized(captured) { ArrayList(captured) }
+                  val found = parseTT(docs)
+                  if (found.isNotEmpty()) { show(found); return }
+                  if (tick >= 25) {
+                      lastLink = ""
+                      say("Tidak ditemukan. url=${web.url}; data=${docs.size}")
+                      return
+                  }
+                  handler.postDelayed({ poll(my, tick + 1) }, 1000)
+              }
+
+              private fun parseTT(docs: List<String>): List<Media> {
+                  for (d in docs) {
+                      try {
+                          val item = findKey(JSONObject(d), "itemStruct") as? JSONObject ?: continue
+                          val res = collectTT(item)
+                          if (res.isNotEmpty()) return res
+                      } catch (e: Exception) { }
+                  }
+                  return emptyList()
+              }
+
+              private fun findKey(n: Any?, key: String): Any? {
+                  if (n is JSONObject) {
+                      if (n.has(key)) return n.opt(key)
+                      for (k in n.keys()) findKey(n.opt(k), key)?.let { return it }
+                  } else if (n is JSONArray) {
+                      for (i in 0 until n.length()) findKey(n.opt(i), key)?.let { return it }
+                  }
+                  return null
+              }
+
+              private fun collectTT(item: JSONObject): List<Media> {
+                  val ref = "https://www.tiktok.com/"
+                  val out = ArrayList<Media>()
+                  val imgs = item.optJSONObject("imagePost")?.optJSONArray("images")
+                  if (imgs != null && imgs.length() > 0) {
+                      for (i in 0 until imgs.length()) {
+                          val u = imgs.optJSONObject(i)?.optJSONObject("imageURL")
+                              ?.optJSONArray("urlList")?.optString(0) ?: ""
+                          if (u.isNotEmpty()) out.add(Media(u, false, u, ref))
+                      }
+                      return out
+                  }
+                  val v = item.optJSONObject("video") ?: return out
+                  var url = ""
+                  var br = -1L
+                  val rates = v.optJSONArray("bitrateInfo")
+                  if (rates != null) {
+                      for (i in 0 until rates.length()) {
+                          val r = rates.optJSONObject(i) ?: continue
+                          val u = r.optJSONObject("PlayAddr")?.optJSONArray("UrlList")?.optString(0) ?: ""
+                          val b = r.optLong("Bitrate")
+                          if (u.isNotEmpty() && b > br) { br = b; url = u }
+                      }
+                  }
+                  if (url.isEmpty()) url = v.optString("playAddr")
+                  if (url.isEmpty()) url = v.optString("downloadAddr")
+                  val cover = v.optString("cover").ifEmpty { v.optString("originCover") }
+                  if (url.isNotEmpty()) out.add(Media(url, true, cover, ref))
+                  return out
+              }
+
+              // ---------- Tampilan ----------
+              private fun setSel(i: Int, v: Boolean) {
+                  chosen[i] = v
+                  overlays[i].visibility = if (v) View.VISIBLE else View.GONE
+              }
+
+              private fun syncAll() {
+                  bulk = true
+                  allBox?.isChecked = chosen.isNotEmpty() && chosen.all { it }
+                  bulk = false
+              }
+
+              private fun show(found: List<Media>) {
+                  items.clear(); overlays.clear(); list.removeAllViews()
+                  items.addAll(found)
+                  chosen = BooleanArray(found.size)
+                  val nv = found.count { it.video }
+                  say("Ketemu $nv video dan ${found.size - nv} foto. Sentuh gambar untuk memilih.")
+                  val all = CheckBox(this).apply {
+                      text = "Pilih semua"
+                      setOnCheckedChangeListener { _, c ->
+                          if (!bulk) for (i in chosen.indices) setSel(i, c)
+                      }
+                  }
+                  allBox = all
+                  list.addView(all)
+                  val gap = dp(4)
+                  val cw = (resources.displayMetrics.widthPixels - dp(32) - gap * 6) / 3
+                  val ch = cw * 16 / 9
+                  val grid = GridLayout(this).apply { columnCount = 3 }
+                  found.forEachIndexed { i, m ->
+                      val cell = FrameLayout(this)
+                      val img = ImageView(this).apply {
+                          scaleType = ImageView.ScaleType.CENTER_CROP
+                          setBackgroundColor(Color.LTGRAY)
+                      }
+                      val ov = View(this).apply {
+                          setBackgroundColor(Color.argb(160, 255, 255, 255))
+                          visibility = View.GONE
+                      }
+                      cell.addView(img, FrameLayout.LayoutParams(-1, -1))
+                      cell.addView(ov, FrameLayout.LayoutParams(-1, -1))
+                      if (m.video) {
+                          cell.addView(TextView(this).apply {
+                              text = "▶ Video"
+                              textSize = 11f
+                              setTextColor(Color.WHITE)
+                              setBackgroundColor(Color.argb(150, 0, 0, 0))
+                              setPadding(dp(6), dp(2), dp(6), dp(2))
+                          }, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.START))
+                      }
+                      overlays.add(ov)
+                      cell.setOnClickListener { setSel(i, !chosen[i]); syncAll() }
+                      grid.addView(cell, GridLayout.LayoutParams().apply {
+                          width = cw
+                          height = ch
+                          setMargins(gap, gap, gap, gap)
+                      })
+                      loadThumb(m, img)
+                  }
+                  list.addView(grid)
+                  btn.isEnabled = true
+              }
+
+              private fun loadThumb(m: Media, v: ImageView) {
+                  if (m.thumb.isEmpty()) return
+                  Thread {
+                      try {
+                          val o = BitmapFactory.Options().apply { inSampleSize = 2 }
+                          val bmp = BitmapFactory.decodeStream(open(m.thumb, m.ref).inputStream, null, o)
+                          runOnUiThread { v.setImageBitmap(bmp) }
+                      } catch (e: Exception) {
+                      }
+                  }.start()
+              }
+
+              private fun download() {
+                  val sel = items.filterIndexed { i, _ -> chosen[i] }
+                  if (sel.isEmpty()) { say("Sentuh dulu minimal satu gambar."); return }
+                  btn.isEnabled = false
+                  Thread {
+                      var ok = 0
+                      sel.forEachIndexed { n, m ->
+                          say("Mengunduh ${n + 1} dari ${sel.size}... (jangan tutup aplikasi)")
+                          try { save(m, n); ok++ } catch (e: Exception) { }
+                      }
+                      say("Selesai: $ok dari ${sel.size} tersimpan di galeri (album EasyDownloader).")
+                      runOnUiThread { btn.isEnabled = true }
+                  }.start()
+              }
+
+              private fun save(m: Media, n: Int) {
+                  val path = m.url.substringBefore("?").lowercase()
+                  val ext = if (m.video) "mp4" else if (path.endsWith(".png")) "png"
+                            else if (path.endsWith(".webp")) "webp" else "jpg"
+                  val mime = if (m.video) "video/mp4" else when (ext) {
+                      "png" -> "image/png"
+                      "webp" -> "image/webp"
+                      else -> "image/jpeg"
+                  }
+                  val v = ContentValues().apply {
+                      put(MediaStore.MediaColumns.DISPLAY_NAME, "easydl_${System.currentTimeMillis()}_$n.$ext")
+                      put(MediaStore.MediaColumns.MIME_TYPE, mime)
+                      put(MediaStore.MediaColumns.RELATIVE_PATH, (if (m.video) "Movies" else "Pictures") + "/EasyDownloader")
+                      put(MediaStore.MediaColumns.IS_PENDING, 1)
+                  }
+                  val col = if (m.video) MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+                            else MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+                  val uri = contentResolver.insert(col, v)!!
+                  open(m.url, m.ref).inputStream.use { i ->
+                      contentResolver.openOutputStream(uri)!!.use { o -> i.copyTo(o) }
+                  }
+                  v.clear()
+                  v.put(MediaStore.MediaColumns.IS_PENDING, 0)
+                  contentResolver.update(uri, v, null, null)
+              }
+          }
+          EOF
+      - name: Build
+        run: gradle assembleDebug
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ github.run_number }}
+          files: app/build/outputs/apk/debug/app-debug.apk
