@@ -52,8 +52,8 @@ jobs:
               applicationId 'com.pribadi.easydl'
               minSdk 29
               targetSdk 34
-              versionCode 8
-              versionName '4.4'
+              versionCode 9
+              versionName '4.5'
             }
             compileOptions {
               sourceCompatibility JavaVersion.VERSION_17
@@ -204,7 +204,7 @@ jobs:
               val aitag: Int = 0
           )
 
-          class Fmt(val url: String, val h: Int, val mime: String, val codecs: String, val br: Long, val size: Long, val fps: Int, val itag: Int = 0)
+          class Fmt(val url: String, val h: Int, val mime: String, val codecs: String, val br: Long, val size: Long, val fps: Int, val itag: Int = 0, val lang: Int = 0)
 
           class AuthFail(code: Int) : IOException("Instagram refused the request (HTTP $code)")
 
@@ -1367,6 +1367,18 @@ jobs:
 
               private fun mb(b: Long): String = if (b > 0) " · ${b / 1048576} MB" else ""
 
+              // original-language sound track scores highest (many videos also carry dubbed tracks)
+              private fun langScore(o: JSONObject): Int {
+                  val t = o.optJSONObject("audioTrack")
+                  val name = (t?.optString("displayName") ?: "").lowercase()
+                  val u = o.optString("url").lowercase()
+                  if (name.contains("original") || u.contains("acont%3doriginal") || u.contains("acont=original")) return 3
+                  if (name.contains("descriptive") || u.contains("acont%3ddescriptive") || u.contains("acont=descriptive")) return -2
+                  if (t != null && t.optBoolean("audioIsDefault")) return 2
+                  if (name.contains("dub") || u.contains("acont%3ddubbed") || u.contains("acont=dubbed")) return -1
+                  return 1
+              }
+
               private fun buildYt(id: String, sd: JSONObject, ua: String): List<Media> {
                   val prog = ArrayList<Fmt>()
                   val vmp4 = ArrayList<Fmt>()
@@ -1383,7 +1395,7 @@ jobs:
                           val mime = mt.substringBefore(";").trim()
                           val codecs = mt.substringAfter("codecs=\"", "").substringBefore("\"")
                           val f = Fmt(u, o.optInt("height"), mime, codecs, o.optLong("bitrate"),
-                              o.optString("contentLength").toLongOrNull() ?: 0L, o.optInt("fps"), o.optInt("itag"))
+                              o.optString("contentLength").toLongOrNull() ?: 0L, o.optInt("fps"), o.optInt("itag"), langScore(o))
                           if (pass == 0) {
                               if (mime == "video/mp4") prog.add(f)
                           } else if (mime == "video/mp4" && codecs.startsWith("avc1")) {
@@ -1392,10 +1404,10 @@ jobs:
                               vweb.add(f)
                           } else if (mime == "audio/mp4") {
                               val cur = amp4
-                              if (cur == null || f.br > cur.br) amp4 = f
+                              if (cur == null || f.lang > cur.lang || (f.lang == cur.lang && f.br > cur.br)) amp4 = f
                           } else if (mime == "audio/webm") {
                               val cur = aweb
-                              if (cur == null || f.br > cur.br) aweb = f
+                              if (cur == null || f.lang > cur.lang || (f.lang == cur.lang && f.br > cur.br)) aweb = f
                           }
                       }
                   }
