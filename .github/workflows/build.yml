@@ -52,8 +52,8 @@ jobs:
               applicationId 'com.pribadi.easydl'
               minSdk 29
               targetSdk 34
-              versionCode 11
-              versionName '4.7'
+              versionCode 12
+              versionName '4.8'
             }
             compileOptions {
               sourceCompatibility JavaVersion.VERSION_17
@@ -203,7 +203,8 @@ jobs:
               val ytId: String = "",
               val itag: Int = 0,
               val aitag: Int = 0,
-              val hls: Boolean = false
+              val hls: Boolean = false,
+              val gua: String = ""
           )
 
           class Fmt(val url: String, val h: Int, val mime: String, val codecs: String, val br: Long, val size: Long, val fps: Int, val itag: Int = 0, val lang: Int = 0)
@@ -258,6 +259,11 @@ jobs:
               private var genBase = ""
               private var genSeen = -1
               private var quiet = false
+              private val genChecked = HashSet<String>()
+              @Volatile private var genChecking = false
+              private val genGood = ArrayList<Media>()
+              private var genGoodAt = -1
+              private var genPage = ""
 
               private val UA = "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36"
               private val UAD = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
@@ -304,7 +310,7 @@ jobs:
           var m=h.match(/https?:\/\/[^"'\s\\<>()]+?\.(?:mp4|m3u8|webm|mkv)(?:\?[^"'\s\\<>()]*)?/g);
           if(m)for(var j=0;j<m.length&&j<40;j++)send(m[j]);
           var bt=document.querySelectorAll('button,a,div[role=button],input[type=button],input[type=submit],span');
-          for(var k=0;k<bt.length&&k<400;k++){var t=(bt[k].innerText||bt[k].value||'').trim().toLowerCase();if(t.length>0&&t.length<40&&/(turned it off|i('| a)?m human|not a robot|click to play|tap to play|watch now|play video|continue to video)/.test(t)){try{bt[k].click()}catch(x){}}}
+          for(var k=0;k<bt.length&&k<400;k++){var t=(bt[k].innerText||bt[k].value||'').trim().toLowerCase();if(t.length>0&&t.length<40&&/(turned it off|i('| a)?m human|not a robot|click to play|tap to play|watch now|play video|continue|download|unduh|get link|generate|proceed)/.test(t)&&!/(app|apk|install|extension|vpn|premium|register|sign|login|upgrade)/.test(t)){try{bt[k].click()}catch(x){}}}
           var pl=document.querySelectorAll('.vjs-big-play-button,.jw-icon-display,.plyr__control--overlaid,.play-button,[class*=big-play],[aria-label=Play],[title=Play]');
           for(var q=0;q<pl.length;q++){try{pl[q].click()}catch(x){}}
           })();"""
@@ -356,7 +362,7 @@ jobs:
                       }
                   })
                   status = TextView(this).apply {
-                      text = "Easy Downloader 4.7\nCopy a video link from any website (Threads, X, TikTok, Facebook, Instagram, YouTube or others), then open this app. You can also paste it in the box above."
+                      text = "Easy Downloader 4.8\nCopy a video link from any website (Threads, X, TikTok, Facebook, Instagram, YouTube or others), then open this app. You can also paste it in the box above."
                       setPadding(0, dp(8), 0, dp(8))
                   }
                   list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -562,6 +568,8 @@ jobs:
                       w.settings.mediaPlaybackRequiresUserGesture = false
                       w.settings.javaScriptCanOpenWindowsAutomatically = false
                       w.settings.setSupportMultipleWindows(false)
+                      // like a download manager: catch the file when the site starts a download
+                      w.setDownloadListener { url, _, _, _, _ -> addGen(url, genPage) }
                   }
                   CookieManager.getInstance().setAcceptCookie(true)
                   CookieManager.getInstance().setAcceptThirdPartyCookies(w, true)
@@ -571,7 +579,12 @@ jobs:
                           val u = request.url
                           if (plat == "gen" && (u.scheme == "http" || u.scheme == "https")) {
                               // ads open other websites: never leave the page we started on
-                              if (request.isForMainFrame && genBase.isNotEmpty() && baseOf(u.host ?: "") != genBase) return true
+                              if (request.isForMainFrame && genBase.isNotEmpty() && baseOf(u.host ?: "") != genBase) {
+                                  // do not open the other site, only check if it is the video file itself
+                                  val s = u.toString()
+                                  if (ADS.none { s.lowercase().contains(it) }) addGen(s, genPage)
+                                  return true
+                              }
                               return false
                           }
                           if (u.scheme == "http" || u.scheme == "https") return false
@@ -620,6 +633,7 @@ jobs:
 
                       override fun onPageFinished(view: WebView, url: String?) {
                           if (plat == "gen" && genBase.isEmpty() && url != null) genBase = baseOf(Uri.parse(url).host ?: "")
+                          if (plat == "gen" && url != null && url.startsWith("http")) genPage = url
                           if (plat != "tt") view.evaluateJavascript(HOOK, null)
                       }
                   }
@@ -669,6 +683,11 @@ jobs:
                   synchronized(genUrls) { genUrls.clear(); genRef.clear() }
                   genBase = ""
                   genSeen = -1
+                  genChecked.clear()
+                  genChecking = false
+                  synchronized(genGood) { genGood.clear() }
+                  genGoodAt = -1
+                  genPage = link
                   synchronized(captured) { captured.clear(); seen.clear() }
                   plat = platformOf(link)
                   say("Loading…")
@@ -870,15 +889,21 @@ jobs:
                       }
                       "gen" -> {
                           w.evaluateJavascript(GEN_JS, null)
-                          if (tick >= 3 && tick % 3 == 0 && tick <= 30) tapCenter(w)
-                          val c = synchronized(genUrls) { ArrayList(genUrls) }
-                          if (c.isNotEmpty()) {
-                              if (genSeen < 0) genSeen = tick
-                              if (tick >= genSeen + 2) {
-                                  pickGen(my, c)
+                          if (tick >= 3 && tick % 3 == 0 && tick <= 45) tapCenter(w)
+                          // every link found is checked first: only real video files count
+                          val fresh = synchronized(genUrls) { genUrls.filter { it !in genChecked } }
+                          if (fresh.isNotEmpty() && !genChecking) {
+                              genChecked.addAll(fresh)
+                              checkGen(my, fresh)
+                          }
+                          val good = synchronized(genGood) { ArrayList(genGood) }
+                          if (good.isNotEmpty()) {
+                              if (genGoodAt < 0) genGoodAt = tick
+                              if (tick >= genGoodAt + 3 && !genChecking) {
+                                  chooseGen(good)
                                   return
                               }
-                          }
+                          } else if (tick % 5 == 0) say("Looking for the video… (${tick}s)")
                       }
                       "th", "ig" -> {
                           val rx = if (plat == "th") "/(?:post|t)/([A-Za-z0-9_-]+)" else "/(?:p|reel|reels|tv)/([A-Za-z0-9_-]+)"
@@ -936,7 +961,7 @@ jobs:
                       if (plat == "ig" && !hasCookie("https://www.instagram.com", "sessionid=")) { showLogin("Instagram", lastLink); return }
                       if (plat == "fb" && !hasCookie("https://www.facebook.com", "c_user=")) { showLogin("Facebook", lastLink); return }
                   }
-                  if (tick >= (if (plat == "gen") 40 else if (plat == "fb" && fbTotal > 0) 30 else 25)) {
+                  if (tick >= (if (plat == "gen") 60 else if (plat == "fb" && fbTotal > 0) 30 else 25)) {
                       if (plat == "gen") {
                           fail(my, "No video found on this page (no ads were opened). If the site asks you to turn off VPN or WARP, turn it off and try again.")
                           return
@@ -974,47 +999,94 @@ jobs:
                       show(listOf(Media(link, true, "", originOf(link), hls = true)))
                       return
                   }
-                  say("Opening the page without ads… (up to 40 seconds)")
+                  say("Opening the page without ads… (up to 60 seconds)")
                   newWeb(my, UAD, true).loadUrl(link)
                   poll(my, 0)
               }
 
-              // choose the best video among everything the page loaded
-              private fun pickGen(my: Int, c: List<String>) {
-                  pollStop = true
-                  say("Choosing the best quality…")
+              private fun addGen(u: String, ref: String) {
+                  if (!u.startsWith("http")) return
+                  synchronized(genUrls) {
+                      if (genUrls.size < 80 && genUrls.none { it == u }) {
+                          genUrls.add(u)
+                          genRef[u] = ref
+                      }
+                  }
+              }
+
+              // real video files start with known bytes; web pages and error pages do not
+              private fun isVideo(h: ByteArray, n: Int): Boolean {
+                  if (n < 4) return false
+                  if (n >= 8) {
+                      val box = String(h, 4, 4)
+                      if (box == "ftyp") return !(n >= 12 && String(h, 8, 4) in setOf("M4A ", "avif", "avis", "heic", "heix", "mif1", "msf1"))
+                      if (box == "moov" || box == "mdat" || box == "free" || box == "skip" || box == "wide") return true
+                  }
+                  val b0 = h[0].toInt() and 0xFF
+                  if (b0 == 0x1A && (h[1].toInt() and 0xFF) == 0x45 && (h[2].toInt() and 0xFF) == 0xDF && (h[3].toInt() and 0xFF) == 0xA3) return true
+                  if (b0 == 0x47 && String(h, 0, 3) != "GIF") return true
+                  if (String(h, 0, 3) == "FLV") return true
+                  if (n >= 12 && String(h, 0, 4) == "RIFF" && String(h, 8, 4) == "AVI ") return true
+                  return false
+              }
+
+              // look at the first bytes and the size of a link without downloading it
+              private fun probe(u: String, ref: String): Pair<String, Long> {
+                  val c = open(u, ref, UAD)
+                  c.setRequestProperty("Range", "bytes=0-15")
+                  try {
+                      val code = c.responseCode
+                      if (code >= 400) return Pair("bad", -1L)
+                      val cr = c.getHeaderField("Content-Range")
+                      val size = if (cr != null && cr.contains("/")) (cr.substringAfter("/").trim().toLongOrNull() ?: -1L)
+                          else if (code == 206) -1L else c.contentLengthLong
+                      val h = ByteArray(16)
+                      var n = 0
+                      c.inputStream.use { i ->
+                          while (n < 16) {
+                              val r = i.read(h, n, 16 - n)
+                              if (r < 0) break
+                              n += r
+                          }
+                      }
+                      val head = String(h, 0, n).trimStart('\uFEFF', ' ', '\n', '\r')
+                      if (head.startsWith("#EXTM3U")) return Pair("hls", size)
+                      return Pair(if (isVideo(h, n)) "video" else "bad", size)
+                  } finally {
+                      c.disconnect()
+                  }
+              }
+
+              private fun checkGen(my: Int, list: List<String>) {
+                  genChecking = true
                   Thread {
                       try {
-                          val ok = c.filter { u -> ADS.none { u.lowercase().contains(it) } }
-                          val hls = ok.filter { it.lowercase().substringBefore("?").endsWith(".m3u8") }
-                          val direct = ok.filter { it !in hls }
-                          var best: Media? = null
-                          var bestSize = -1L
-                          for (u in direct) {
-                              val ref = genRef[u] ?: lastLink
-                              val sz = try { sizeOf(u, ref) } catch (e: Exception) { -1L }
-                              if (sz > bestSize) { bestSize = sz; best = Media(u, true, "", ref) }
-                          }
-                          if (best != null && bestSize in 0..300000 && hls.isNotEmpty()) best = null
-                          if (best == null && hls.isNotEmpty()) {
-                              var pick = hls[0]
-                              for (u in hls) {
-                                  val body = try { txt(u, genRef[u] ?: lastLink) } catch (e: Exception) { "" }
-                                  if (body.contains("#EXT-X-STREAM-INF")) { pick = u; break }
-                              }
-                              best = Media(pick, true, "", genRef[pick] ?: lastLink, hls = true)
-                          }
-                          val chosen2 = best
-                          runOnUiThread {
-                              if (my == gen) {
-                                  if (chosen2 == null) fail(my, "Found no downloadable video on this page.")
-                                  else show(listOf(chosen2))
+                          for (u in list) {
+                              if (my != gen) break
+                              if (ADS.any { u.lowercase().contains(it) }) continue
+                              val ref = genRef[u] ?: genPage
+                              val r = try { probe(u, ref) } catch (e: Exception) { Pair("bad", -1L) }
+                              if (r.first == "video" && (r.second < 0 || r.second >= 300000)) {
+                                  synchronized(genGood) { genGood.add(Media(u, true, "", ref, size = r.second, gua = UAD)) }
+                              } else if (r.first == "hls") {
+                                  val master = try { txt(u, ref).contains("#EXT-X-STREAM-INF") } catch (e: Exception) { false }
+                                  synchronized(genGood) { genGood.add(Media(u, true, "", ref, hls = true, size = if (master) 1L else 0L, gua = UAD)) }
                               }
                           }
-                      } catch (e: Exception) {
-                          fail(my, "Failed: ${e.message}")
+                      } finally {
+                          genChecking = false
                       }
                   }.start()
+              }
+
+              // the biggest real video file wins (= best quality); a stream list is used when there is no file
+              private fun chooseGen(good: List<Media>) {
+                  val files = good.filter { !it.hls }
+                  val lists = good.filter { it.hls }
+                  val f = files.maxByOrNull { it.size }
+                  val l = lists.maxByOrNull { it.size }
+                  val pick = if (f != null && (l == null || f.size < 0 || f.size >= 1048576)) f else l ?: f
+                  if (pick != null) show(listOf(pick))
               }
 
               // last resort for Threads: read the public embed page without JavaScript
@@ -1833,7 +1905,7 @@ jobs:
                       contentResolver.openOutputStream(item.first)!!.use { o ->
                           if (m.ua.isNotEmpty()) fetchChunks(url, o, m.ua, m.size, "Video", m.ytId, m.itag)
                           else {
-                              val c = open(url, m.ref)
+                              val c = open(url, m.ref, if (m.gua.isNotEmpty()) m.gua else UA)
                               c.inputStream.use { i ->
                                   val head = ByteArray(16)
                                   var n = 0
@@ -1843,8 +1915,10 @@ jobs:
                                       n += r
                                   }
                                   if (m.video && kindOf(head, n) == "audio") throw IOException("This file is audio only, not a video")
+                                  if (m.gua.isNotEmpty() && !isVideo(head, n)) throw IOException("The site sent a web page instead of the video")
                                   o.write(head, 0, n)
-                                  i.copyTo(o)
+                                  val total = n + i.copyTo(o)
+                                  if (m.gua.isNotEmpty() && total < 300000) throw IOException("The file is too small to be the real video")
                               }
                           }
                       }
@@ -1855,7 +1929,7 @@ jobs:
                   finishItem(item)
               }
 
-              private fun txt(u: String, ref: String): String = open(u, ref).inputStream.bufferedReader().readText()
+              private fun txt(u: String, ref: String): String = open(u, ref, UAD).inputStream.bufferedReader().readText()
 
               private fun absUrl(base: String, rel: String): String = URL(URL(base), rel).toString()
 
@@ -1903,9 +1977,9 @@ jobs:
                   var last: Exception? = null
                   for (a in 0..2) {
                       try {
-                          var b = open(s.url, ref).inputStream.use { it.readBytes() }
+                          var b = open(s.url, ref, UAD).inputStream.use { it.readBytes() }
                           if (s.keyUrl.isNotEmpty()) {
-                              val k = keys.getOrPut(s.keyUrl) { open(s.keyUrl, ref).inputStream.use { it.readBytes() } }
+                              val k = keys.getOrPut(s.keyUrl) { open(s.keyUrl, ref, UAD).inputStream.use { it.readBytes() } }
                               val iv = s.iv ?: ByteArray(16).also {
                                   var v = s.seq
                                   for (j in 15 downTo 8) { it[j] = (v and 0xFF).toByte(); v = v shr 8 }
@@ -1927,7 +2001,7 @@ jobs:
                   if (p.segs.isEmpty()) throw IOException("The video list is empty")
                   val keys = java.util.concurrent.ConcurrentHashMap<String, ByteArray>()
                   out.outputStream().buffered().use { o ->
-                      if (p.map.isNotEmpty()) o.write(open(p.map, ref).inputStream.use { it.readBytes() })
+                      if (p.map.isNotEmpty()) o.write(open(p.map, ref, UAD).inputStream.use { it.readBytes() })
                       val pool = java.util.concurrent.Executors.newFixedThreadPool(4)
                       try {
                           var i = 0
