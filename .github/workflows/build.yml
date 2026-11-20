@@ -52,8 +52,8 @@ jobs:
               applicationId 'com.pribadi.easydl'
               minSdk 29
               targetSdk 34
-              versionCode 15
-              versionName '5.1'
+              versionCode 16
+              versionName '5.2'
             }
             compileOptions {
               sourceCompatibility JavaVersion.VERSION_17
@@ -288,6 +288,7 @@ jobs:
               private var clean: VideoView? = null
               private var cleanShown = false
               private var genSettled = false
+              private var genDirect = ""
               private val active = java.util.concurrent.atomic.AtomicInteger(0)
               private val dlGen = ThreadLocal<Int>()
               @Volatile private var lastNote = 0L
@@ -394,27 +395,29 @@ jobs:
           })();"""
 
               private val GEN_JS = """(function(){
-          if(!window.__cl){window.__cl=function(){try{var rx=/(click allow|not a robot|press allow|e-captcha|allow notifications|confirm to continue|please confirm|tap allow|confirm you are)/;
-          var es=document.querySelectorAll('body *');for(var i=0;i<es.length&&i<4000;i++){var e=es[i];
-          if(e.shadowRoot){var st=(e.shadowRoot.textContent||'').toLowerCase();if(rx.test(st)||e.shadowRoot.querySelector('iframe')){e.remove();continue}}
-          if(e.tagName=='IFRAME'){var cf=getComputedStyle(e);if((cf.position=='fixed'||cf.position=='absolute')&&!/(embed|player|video|\/e\/)/i.test(e.src||''))e.remove();continue}}
-          var c=document.elementFromPoint(innerWidth/2,innerHeight/2);var k=0;
-          while(c&&c!=document.body&&c.tagName!='VIDEO'&&k<3){k++;var t=(c.innerText||'').toLowerCase();
-          if((c.tagName=='IFRAME'&&!/(embed|player|video|\/e\/)/i.test(c.src||''))||(c.tagName!='IFRAME'&&t.length<400&&rx.test(t))){var p=c;var best=null;while(p&&p!=document.body){var s2=getComputedStyle(p);if(s2.position=='fixed'||s2.position=='absolute')best=p;p=p.parentElement}(best||c).remove();c=document.elementFromPoint(innerWidth/2,innerHeight/2)}else break}}catch(x){}};
-          try{new MutationObserver(function(){clearTimeout(window.__ct);window.__ct=setTimeout(window.__cl,150)}).observe(document.documentElement,{childList:true,subtree:true})}catch(x){}}
+          if(!window.__cl){window.__cl=function(){try{
+          var rx=/(click allow|not a robot|press allow|e-captcha|allow notifications|confirm to continue|please confirm|tap allow|confirm you are)/;
+          var hasMedia=function(el){try{if(!el||!el.querySelector)return false;if(/^(VIDEO|CANVAS|OBJECT|EMBED)$/.test(el.tagName))return true;if(el.querySelector('video,canvas,object,embed'))return true;
+          var fs=el.querySelectorAll('iframe');for(var a=0;a<fs.length;a++){if(/(embed|player|video|\/e\/)/i.test(fs[a].src||''))return true}
+          if(el.shadowRoot&&el.shadowRoot.querySelector('video'))return true}catch(x){}return false};
+          var kill=function(el){var p=el,best=null;while(p&&p!=document.body&&p!=document.documentElement){if(hasMedia(p))break;var s=getComputedStyle(p);if(s.position=='fixed'||s.position=='absolute')best=p;p=p.parentElement}if(best&&!hasMedia(best))best.remove()};
+          var es=document.querySelectorAll('body *');
+          for(var i=0;i<es.length&&i<4000;i++){var e=es[i];if(!e.isConnected)continue;
+          if(e.shadowRoot){var st=(e.shadowRoot.textContent||'').toLowerCase();if(rx.test(st)&&!hasMedia(e)){e.remove();continue}}
+          if(e.tagName=='IFRAME'){var cf=getComputedStyle(e);if(cf.position=='fixed'&&!/(embed|player|video|\/e\/)/i.test(e.src||''))e.remove();continue}
+          if(e.children.length<=3){var t=(e.innerText||'').toLowerCase();if(t.length>0&&t.length<300&&rx.test(t))kill(e)}}
+          var top=document.querySelectorAll('body > *');for(var y=0;y<top.length;y++){var c2=getComputedStyle(top[y]);if(c2.position=='fixed'&&parseInt(c2.zIndex||'0')>=10000&&!hasMedia(top[y]))top[y].remove()}
+          }catch(x){}};
+          try{new MutationObserver(function(){clearTimeout(window.__ct);window.__ct=setTimeout(window.__cl,200)}).observe(document.documentElement,{childList:true,subtree:true})}catch(x){}}
           window.__cl();
-          try{var all=document.querySelectorAll('body *');for(var z=0;z<all.length&&z<3000;z++){var el=all[z];var tx=(el.innerText||'').toLowerCase();
-          if(tx.length<300&&/(click allow|not a robot|press allow|e-captcha|allow notifications|confirm to continue|please confirm|you are not a robot|tap allow)/.test(tx)){var p=el;while(p&&p!=document.body){var cs=getComputedStyle(p);if(cs.position=='fixed'||cs.position=='absolute'){p.remove();break}p=p.parentElement}}}
-          var top=document.querySelectorAll('body > *');for(var y=0;y<top.length;y++){var c2=getComputedStyle(top[y]);if(c2.position=='fixed'&&parseInt(c2.zIndex||'0')>=10000&&!top[y].querySelector('video'))top[y].remove()}}catch(x){}
           var send=function(u){try{if(u&&u.indexOf('http')==0)B.v(u,location.href)}catch(e){}};
           var vs=document.querySelectorAll('video,source');
           for(var i=0;i<vs.length;i++){var e=vs[i];send(e.currentSrc);send(e.src);try{if(e.tagName=='VIDEO'){if(!e.paused)window.__pl=1;if(!window.__pl&&!e.__ap){e.__ap=1;var p=e.play();if(p&&p.catch)p.catch(function(){e.muted=true;e.play()})}}}catch(x){}}
-          try{var fr=document.querySelectorAll('iframe');for(var w=0;w<fr.length;w++){var cf=getComputedStyle(fr[w]);if(cf.position=='fixed'||(parseInt(cf.zIndex||'0')>=1000&&!/(embed|player|video)/i.test(fr[w].src||'')))fr[w].remove()}}catch(x){}
           var h=document.documentElement.innerHTML.replace(/\\\//g,'/').replace(/\\u0026/g,'&').replace(/&amp;/g,'&');
           var m=h.match(/https?:\/\/[^"'\s\\<>()]+?\.(?:mp4|m3u8|webm|mkv)(?:\?[^"'\s\\<>()]*)?/g);
           if(m)for(var j=0;j<m.length&&j<40;j++)send(m[j]);
           var bt=document.querySelectorAll('button,a,div[role=button],input[type=button],input[type=submit],span');
-          for(var k=0;k<bt.length&&k<400;k++){var t=(bt[k].innerText||bt[k].value||'').trim().toLowerCase();if(t.length>0&&t.length<40&&/(turned it off|i('| a)?m human|not a robot|click to play|tap to play|watch now|play video|continue to video|get link|generate|proceed|^ok$|^i agree$|^enter$|i am 18|i'm 18|18\+)/.test(t)&&!/(app|apk|install|extension|vpn|premium|register|sign|login|upgrade)/.test(t)){try{bt[k].click()}catch(x){}}}
+          for(var k=0;k<bt.length&&k<400;k++){var t=(bt[k].innerText||bt[k].value||'').trim().toLowerCase();if(t.length>0&&t.length<40&&/(turned it off|i('| a)?m human|not a robot|click to play|tap to play|watch now|play video|continue to video|get link|generate|proceed|skip ad|^skip|^continue$|click here to continue|get video|watch video|^ok$|^i agree$|^enter$|i am 18|i'm 18|18\+)/.test(t)&&!/(app|apk|install|extension|vpn|premium|register|sign|login|upgrade)/.test(t)){try{bt[k].click()}catch(x){}}}
           if(!window.__pl&&!(window.__pc>6)){window.__pc=(window.__pc||0)+1;
           var pl=document.querySelectorAll('.vjs-big-play-button,.jw-icon-display,.jw-display-icon-container,.plyr__control--overlaid,.play-button,.playbtn,.btn-play,[class*=big-play],[class*=play-btn],[class*=playbtn],[aria-label=Play],[aria-label=play],[title=Play]');
           for(var q=0;q<pl.length;q++){try{pl[q].click()}catch(x){}}}
@@ -467,7 +470,7 @@ jobs:
                       }
                   })
                   status = TextView(this).apply {
-                      text = "Easy Downloader 5.1\nCopy a video link from any website (Threads, X, TikTok, Facebook, Instagram, YouTube or others), then open this app. You can also paste it in the box above.\nSwipe left to see your downloaded files."
+                      text = "Easy Downloader 5.2\nCopy a video link from any website (Threads, X, TikTok, Facebook, Instagram, YouTube or others), then open this app. You can also paste it in the box above.\nSwipe left to see your downloaded files."
                       setPadding(0, dp(8), 0, dp(8))
                   }
                   list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -1218,6 +1221,7 @@ jobs:
                   genPage = link
                   genPick = null
                   genSettled = false
+                  genDirect = ""
                   genBtn.text = "Waiting for the video…"
                   genBtn.isEnabled = false
                   synchronized(captured) { captured.clear(); seen.clear() }
@@ -1424,6 +1428,12 @@ jobs:
                           w.evaluateJavascript(GEN_HOOK, null)
                           if (cleanShown && playerBox.visibility == View.VISIBLE) w.evaluateJavascript("document.querySelectorAll('video').forEach(function(v){v.pause();v.muted=true})", null)
                           if (tick >= 3 && tick % 3 == 0 && tick <= 12) tapCenter(w)
+                          if (genDirect.isNotEmpty() && genPick == null && tick > 0 && tick % 8 == 0 && tick <= 56) {
+                              // waiting pages often let the file through on a later try (like pressing back and opening it again)
+                              genChecked.remove(genDirect)
+                              addGen(genDirect, genPage)
+                              if (tick % 16 == 0) w.loadUrl(genDirect)
+                          }
                           // every link found is checked first: only real video files count
                           val fresh = synchronized(genUrls) { genUrls.filter { it !in genChecked } }
                           if (fresh.isNotEmpty() && !genChecking) {
@@ -1528,12 +1538,26 @@ jobs:
 
               private fun startGen(link: String, my: Int) {
                   val low = link.lowercase().substringBefore("?").substringBefore("#")
-                  if (Regex("\\.(mp4|webm|mkv|mov|m4v)$").containsMatchIn(low)) {
-                      show(listOf(Media(link, true, "", originOf(link))))
-                      return
-                  }
-                  if (low.endsWith(".m3u8")) {
-                      show(listOf(Media(link, true, "", originOf(link), hls = true)))
+                  if (Regex("\\.(mp4|webm|mkv|mov|m4v|m3u8)$").containsMatchIn(low)) {
+                      say("Checking the link…")
+                      Thread {
+                          val r = try { probe(link, originOf(link)) } catch (e: Exception) { Pair("bad", -1L) }
+                          runOnUiThread {
+                              if (my == gen) {
+                                  when (r.first) {
+                                      "video" -> show(listOf(Media(link, true, "", originOf(link), size = r.second, gua = UAD)))
+                                      "hls" -> show(listOf(Media(link, true, "", originOf(link), hls = true, gua = UAD)))
+                                      else -> {
+                                          // the site shows a waiting page first: open it without ads and try the file again
+                                          genDirect = link
+                                          say("Opening the page without ads…")
+                                          newWeb(my, UAD, true).loadUrl(link)
+                                          poll(my, 0)
+                                      }
+                                  }
+                              }
+                          }
+                      }.start()
                       return
                   }
                   say("Opening the page without ads…")
