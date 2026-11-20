@@ -52,8 +52,8 @@ jobs:
               applicationId 'com.pribadi.easydl'
               minSdk 29
               targetSdk 34
-              versionCode 3
-              versionName '3.0'
+              versionCode 5
+              versionName '4.1'
             }
             compileOptions {
               sourceCompatibility JavaVersion.VERSION_17
@@ -188,13 +188,25 @@ jobs:
               private var lastErr = ""
               private var skipClipUntil = 0L
               private var loginRetry = ""
+              private var fbTotal = 0
+              private var pollStop = false
+              private var thRetried = false
+              private var thEmbedTried = false
+              private var thLoginDone = false
+              private var loginSite = ""
+              private val netVideos = ArrayList<String>()
 
               private val UA = "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36"
               private val UAD = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
               private val LINK = Regex("https?://(?:[\\w-]+\\.)*(?:tiktok\\.com|x\\.com|twitter\\.com|threads\\.net|threads\\.com|facebook\\.com|fb\\.watch|fb\\.com|instagram\\.com|youtube\\.com|youtu\\.be)/\\S*")
+              private class YC(val name: String, val id: String, val ver: String, val ua: String, val android: Boolean = false, val embed: Boolean = false)
+
               private val YT = listOf(
-                  Pair("1.65.10", "com.google.android.apps.youtube.vr.oculus/1.65.10 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip"),
-                  Pair("1.60.19", "com.google.android.apps.youtube.vr.oculus/1.60.19 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip")
+                  YC("ANDROID_VR", "28", "1.65.10", "com.google.android.apps.youtube.vr.oculus/1.65.10 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip", android = true),
+                  YC("ANDROID_VR", "28", "1.62.27", "com.google.android.apps.youtube.vr.oculus/1.62.27 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip", android = true),
+                  YC("TVHTML5_SIMPLY_EMBEDDED_PLAYER", "85", "2.0", "Mozilla/5.0 (PlayStation; PlayStation 4/12.00) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.4 Safari/605.1.15", embed = true),
+                  YC("WEB_EMBEDDED_PLAYER", "56", "1.20250310.01.00", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36", embed = true),
+                  YC("TVHTML5", "7", "7.20250219.14.00", "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/Version")
               )
 
               private val JS_M = """function M(t){return t.indexOf('image_versions2')>-1||t.indexOf('video_versions')>-1||t.indexOf('itemStruct')>-1||t.indexOf('playable_url')>-1||t.indexOf('browser_native')>-1||t.indexOf('viewer_image')>-1||t.indexOf('photo_image')>-1||t.indexOf('og:image')>-1}"""
@@ -380,6 +392,7 @@ jobs:
 
               private fun fail(my: Int, s: String) = runOnUiThread {
                   if (my == gen) {
+                      pollStop = true
                       lastLink = ""
                       busy(false)
                       status.text = s
@@ -458,6 +471,19 @@ jobs:
                           return true
                       }
 
+                      override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): android.webkit.WebResourceResponse? {
+                          if (plat == "tt") {
+                              val u = request.url.toString()
+                              val l = u.lowercase()
+                              if (l.contains("mime_type=video") || l.contains("/video/tos")) {
+                                  synchronized(netVideos) {
+                                      if (netVideos.size < 30 && netVideos.none { it.substringBefore("?") == u.substringBefore("?") }) netVideos.add(u)
+                                  }
+                              }
+                          }
+                          return null
+                      }
+
                       override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
                           if (plat != "tt") view.evaluateJavascript(HOOK, null)
                       }
@@ -498,6 +524,11 @@ jobs:
                   diag = ""
                   lastErr = ""
                   knownCode = ""
+                  fbTotal = 0
+                  pollStop = false
+                  thRetried = false
+                  thEmbedTried = false
+                  synchronized(netVideos) { netVideos.clear() }
                   synchronized(captured) { captured.clear(); seen.clear() }
                   plat = platformOf(link)
                   say("Loading…")
@@ -514,6 +545,7 @@ jobs:
               private fun showLogin(site: String, retry: String) {
                   busy(false)
                   loginRetry = retry
+                  loginSite = site
                   loginTitle.text = "Log in to $site once, then tap Done"
                   loginBox.removeAllViews()
                   loginWeb?.destroy()
@@ -526,12 +558,17 @@ jobs:
                   w.webViewClient = WebViewClient()
                   loginBox.addView(w, FrameLayout.LayoutParams(-1, -1))
                   loginWeb = w
-                  w.loadUrl(if (site == "Instagram") "https://www.instagram.com/accounts/login/" else "https://m.facebook.com/login/")
+                  w.loadUrl(when (site) {
+                      "Instagram" -> "https://www.instagram.com/accounts/login/"
+                      "Threads" -> "https://www.threads.com/login"
+                      else -> "https://m.facebook.com/login/"
+                  })
                   loginHost.visibility = View.VISIBLE
                   status.text = "Login needed to read this content."
               }
 
               private fun finishLogin(ok: Boolean) {
+                  if (ok && loginSite == "Threads") thLoginDone = true
                   CookieManager.getInstance().flush()
                   loginHost.visibility = View.GONE
                   loginBox.removeAllViews()
@@ -670,9 +707,9 @@ jobs:
               }
 
               private fun poll(my: Int, tick: Int) {
-                  if (my != gen) return
+                  if (my != gen || pollStop) return
                   val w = web ?: return
-                  w.evaluateJavascript(if (plat == "fb" && tick % 4 == 0) SCRIPTS_FB else SCRIPTS, null)
+                  w.evaluateJavascript(if (plat == "fb" && tick % 2 == 0) SCRIPTS_FB else SCRIPTS, null)
                   val url = w.url ?: ""
                   val docs = synchronized(captured) { ArrayList(captured) }
                   var found: List<Media> = emptyList()
@@ -681,6 +718,10 @@ jobs:
                           val id = Regex("/(?:video|photo)/(\\d+)").find(url)?.groupValues?.get(1) ?: ""
                           if (id.isNotEmpty()) found = parseTT(docs, id)
                           if (found.isEmpty() && tick >= 10) found = parseTT(docs, "")
+                          if (found.isNotEmpty() && found.none { it.video }) {
+                              // photo post: wait a few seconds so live photo clips can show up in the page traffic
+                              found = if (tick < 7) emptyList() else withNet(found)
+                          }
                       }
                       "th", "ig" -> {
                           val rx = if (plat == "th") "/(?:post|t)/([A-Za-z0-9_-]+)" else "/(?:p|reel|reels|tv)/([A-Za-z0-9_-]+)"
@@ -690,23 +731,90 @@ jobs:
                               if (found.isEmpty() && plat == "th" && tick >= 20 && code.isNotEmpty()) found = parseTh(docs, "")
                           }
                       }
-                      "fb" -> if (tick >= 2) found = parseFb(docs, tick >= 18)
+                      "fb" -> if (tick >= 2) {
+                          found = parseFb(docs, tick >= 18)
+                          if (found.isNotEmpty() && !found[0].video && fbTotal > found.size && tick < 45) {
+                              say("Loading Facebook photos… (${found.size} of $fbTotal)")
+                              fbNudge(w)
+                              found = emptyList()
+                          }
+                      }
                   }
                   if (found.isNotEmpty()) {
                       show(found)
                       return
                   }
+                  if (plat == "th") {
+                      val cur = if (url.startsWith("http")) url else lastLink
+                      if (tick == 12 && docs.isEmpty() && !thRetried) {
+                          // nothing arrived: try once more as a desktop browser
+                          thRetried = true
+                          say("Trying another way…")
+                          newWeb(my, UAD).loadUrl(cur)
+                          handler.postDelayed({ poll(my, 4) }, 1000)
+                          return
+                      }
+                      if (tick == 18 && !thEmbedTried) {
+                          thEmbedTried = true
+                          say("Trying the Threads embed page…")
+                          val m = Regex("@([^/]+)/post/([A-Za-z0-9_-]+)").find(cur)
+                          if (m != null) {
+                              Thread {
+                                  val r = thEmbed(m.groupValues[1], m.groupValues[2])
+                                  runOnUiThread { if (my == gen && !pollStop && r.isNotEmpty()) show(r) }
+                              }.start()
+                          }
+                      }
+                  }
                   if ((plat == "ig" || plat == "fb") && tick >= 4 && url.contains("login")) {
                       if (plat == "ig" && !hasCookie("https://www.instagram.com", "sessionid=")) { showLogin("Instagram", lastLink); return }
                       if (plat == "fb" && !hasCookie("https://www.facebook.com", "c_user=")) { showLogin("Facebook", lastLink); return }
                   }
-                  if (tick >= 25) {
+                  if (tick >= (if (plat == "fb" && fbTotal > 0) 46 else 25)) {
+                      if (plat == "th" && !thLoginDone && !hasCookie("https://www.threads.com", "sessionid=")) { showLogin("Threads", lastLink); return }
                       if (plat == "ig" && !hasCookie("https://www.instagram.com", "sessionid=")) { showLogin("Instagram", lastLink); return }
                       if (plat == "fb" && !hasCookie("https://www.facebook.com", "c_user=")) { showLogin("Facebook", lastLink); return }
                       fail(my, "Nothing found. url=$url; data=${docs.size}")
                       return
                   }
                   handler.postDelayed({ poll(my, tick + 1) }, 1000)
+              }
+
+              // last resort for Threads: read the public embed page without JavaScript
+              private fun thEmbed(user: String, code: String): List<Media> {
+                  val html = try {
+                      open("https://www.threads.com/@$user/post/$code/embed/", "", UAD).inputStream.bufferedReader().readText()
+                  } catch (e: Exception) { return emptyList() }
+                  val clean = html.replace("&amp;", "&").replace("\\/", "/").replace("\\u0026", "&")
+                  val out = LinkedHashMap<String, Media>()
+                  for (m in Regex("https://[^\"'\\s<>\\\\]+").findAll(clean)) {
+                      val u = m.value
+                      val l = u.lowercase()
+                      if (!(l.contains("cdninstagram.com") || l.contains("fbcdn.net"))) continue
+                      if (l.contains("t51.2885-19") || l.contains("s150x150") || l.contains("s320x320")) continue
+                      val name = u.substringBefore("?").substringAfterLast("/")
+                      if (l.contains(".mp4")) out.putIfAbsent(name, Media(u, true, "", "https://www.threads.com/"))
+                      else if (l.contains(".jpg") || l.contains(".webp") || l.contains(".heic")) out.putIfAbsent(name, Media(u, false, u, "https://www.threads.com/"))
+                  }
+                  return out.values.take(20).toList()
+              }
+
+              private fun withNet(found: List<Media>): List<Media> {
+                  val net = synchronized(netVideos) { ArrayList(netVideos) }
+                  if (net.isEmpty()) return found
+                  val have = found.map { it.url.substringBefore("?") }.toSet()
+                  val extra = net.filter { it.substringBefore("?") !in have }
+                      .map { Media(it, true, found[0].thumb, "https://www.tiktok.com/", live = true) }
+                  return found + extra
+              }
+
+              // opens the photo viewer of a Facebook album and flips through the photos so all of them get loaded
+              private fun fbNudge(w: WebView) {
+                  w.evaluateJavascript("""(function(){
+          if(!window.__o){var a=document.querySelector('a[href*="/photo"],a[href*="photo.php"],a[href*="pcb."]');if(a){window.__o=1;a.click()}return}
+          var t=document.activeElement||document.body;
+          ['keydown','keyup'].forEach(function(n){var e=new KeyboardEvent(n,{key:'ArrowRight',code:'ArrowRight',keyCode:39,which:39,bubbles:true});t.dispatchEvent(e);document.dispatchEvent(e)});
+          var nx=document.querySelector('[aria-label="Next photo"],[aria-label="Next"]');if(nx)nx.click()})()""", null)
               }
 
               private fun jsonRoots(d: String): List<JSONObject> {
@@ -784,6 +892,13 @@ jobs:
                               live++
                           } else if (u.isNotEmpty()) {
                               out.add(Media(u, false, u, ref))
+                          }
+                      }
+                      if (live == 0) {
+                          val first = out.firstOrNull()?.thumb ?: ""
+                          for (u in videoUrls(item, setOf("music")).distinct().take(12)) {
+                              out.add(Media(u, true, first, ref, live = true))
+                              live++
                           }
                       }
                       if (live == 0) {
@@ -995,7 +1110,11 @@ jobs:
                           ?: grab(d, "\"sd_src\":\"([^\"]+)\"") ?: ""
                       if (thumb.isEmpty()) thumb = grab(d, "\"preferred_thumbnail\":\\{\"image\":\\{\"uri\":\"([^\"]+)\"") ?: ""
                       if (og.isEmpty()) og = Regex("property=\"og:image\" content=\"([^\"]+)\"").find(d)?.groupValues?.get(1)?.replace("&amp;", "&") ?: ""
-                      for (m in Regex("\"viewer_image\":\\{[^}]*?\"uri\":\"([^\"]+)\"").findAll(d)) {
+                      for (m in Regex("\"all_subattachments\":\\{\"count\":(\\d+)").findAll(d)) {
+                          val c = m.groupValues[1].toIntOrNull() ?: 0
+                          if (c > fbTotal) fbTotal = c
+                      }
+                      for (m in Regex("\"(?:viewer_image|photo_image)\":\\{[^}]*?\"uri\":\"([^\"]+)\"").findAll(d)) {
                           val u = dec(m.groupValues[1])
                           photos.putIfAbsent(u.substringBefore("?").substringAfterLast("/"), u)
                       }
@@ -1033,45 +1152,57 @@ jobs:
                   }.start()
               }
 
+              private fun visitorId(): String = try {
+                  val h = open("https://www.youtube.com/", "", UAD).inputStream.bufferedReader().readText()
+                  Regex("\"(?:VISITOR_DATA|visitorData)\":\"([^\"]+)\"").find(h)?.groupValues?.get(1) ?: ""
+              } catch (e: Exception) { "" }
+
               private fun ytFetch(id: String): Pair<List<Media>, String> {
                   var reason = ""
-                  for ((ver, ua) in YT) {
-                      val client = JSONObject()
-                          .put("clientName", "ANDROID_VR").put("clientVersion", ver)
-                          .put("deviceMake", "Oculus").put("deviceModel", "Quest 3")
-                          .put("androidSdkVersion", 32).put("osName", "Android").put("osVersion", "12L")
-                          .put("userAgent", ua).put("hl", "en").put("gl", "US")
-                      val body = JSONObject()
-                          .put("context", JSONObject().put("client", client))
-                          .put("videoId", id).put("contentCheckOk", true).put("racyCheckOk", true)
-                      val c = URL("https://www.youtube.com/youtubei/v1/player?prettyPrint=false").openConnection() as HttpURLConnection
-                      c.requestMethod = "POST"
-                      c.doOutput = true
-                      c.setRequestProperty("Content-Type", "application/json")
-                      c.setRequestProperty("User-Agent", ua)
-                      c.setRequestProperty("X-YouTube-Client-Name", "28")
-                      c.setRequestProperty("X-YouTube-Client-Version", ver)
-                      c.setRequestProperty("Origin", "https://www.youtube.com")
-                      c.connectTimeout = 20000
-                      c.readTimeout = 30000
-                      c.outputStream.use { it.write(body.toString().toByteArray()) }
-                      val text = try {
-                          c.inputStream.bufferedReader().readText()
+                  val visitor = visitorId()
+                  for (c in YT) {
+                      try {
+                          val client = JSONObject().put("clientName", c.name).put("clientVersion", c.ver).put("hl", "en").put("gl", "US")
+                              .put("userAgent", c.ua)
+                          if (c.android) client.put("deviceMake", "Oculus").put("deviceModel", "Quest 3")
+                              .put("androidSdkVersion", 32).put("osName", "Android").put("osVersion", "12L")
+                          if (visitor.isNotEmpty()) client.put("visitorData", visitor)
+                          val ctx = JSONObject().put("client", client)
+                          if (c.embed) ctx.put("thirdParty", JSONObject().put("embedUrl", "https://www.youtube.com/watch?v=$id"))
+                          val body = JSONObject().put("context", ctx)
+                              .put("videoId", id).put("contentCheckOk", true).put("racyCheckOk", true)
+                          val u = URL("https://www.youtube.com/youtubei/v1/player?prettyPrint=false").openConnection() as HttpURLConnection
+                          u.requestMethod = "POST"
+                          u.doOutput = true
+                          u.setRequestProperty("Content-Type", "application/json")
+                          u.setRequestProperty("User-Agent", c.ua)
+                          u.setRequestProperty("X-YouTube-Client-Name", c.id)
+                          u.setRequestProperty("X-YouTube-Client-Version", c.ver)
+                          u.setRequestProperty("Origin", "https://www.youtube.com")
+                          if (visitor.isNotEmpty()) u.setRequestProperty("X-Goog-Visitor-Id", visitor)
+                          u.connectTimeout = 20000
+                          u.readTimeout = 30000
+                          u.outputStream.use { it.write(body.toString().toByteArray()) }
+                          val text = try {
+                              u.inputStream.bufferedReader().readText()
+                          } catch (e: Exception) {
+                              if (reason.isEmpty()) reason = "HTTP ${u.responseCode}"
+                              continue
+                          }
+                          val j = JSONObject(text)
+                          val sd = j.optJSONObject("streamingData")
+                          if (sd == null) {
+                              if (reason.isEmpty()) reason = j.optJSONObject("playabilityStatus")?.optString("reason") ?: "no streams"
+                              continue
+                          }
+                          val opts = buildYt(id, sd, c.ua)
+                          if (opts.isNotEmpty()) return Pair(opts, j.optJSONObject("videoDetails")?.optString("title") ?: "")
+                          if (reason.isEmpty()) reason = "no direct download formats for this video"
                       } catch (e: Exception) {
-                          reason = "HTTP ${c.responseCode}"
-                          continue
+                          if (reason.isEmpty()) reason = e.message ?: "network error"
                       }
-                      val j = JSONObject(text)
-                      val sd = j.optJSONObject("streamingData")
-                      if (sd == null) {
-                          reason = j.optJSONObject("playabilityStatus")?.optString("reason") ?: "no streams"
-                          continue
-                      }
-                      val opts = buildYt(id, sd, ua)
-                      if (opts.isNotEmpty()) return Pair(opts, j.optJSONObject("videoDetails")?.optString("title") ?: "")
-                      reason = "no direct download formats for this video"
                   }
-                  throw IOException(if (reason.isEmpty()) "video unavailable" else reason)
+                  throw IOException((if (reason.isEmpty()) "video unavailable" else reason) + " (all ${YT.size} methods failed)")
               }
 
               private fun mb(b: Long): String = if (b > 0) " · ${b / 1048576} MB" else ""
@@ -1197,6 +1328,7 @@ jobs:
               }
 
               private fun show(found: List<Media>) {
+                  pollStop = true
                   busy(false)
                   ytMode = false
                   items.clear()
@@ -1372,39 +1504,9 @@ jobs:
                   finishItem(item)
               }
 
-              // live photo = still photo + short clip, saved as an Android "Motion Photo" so the gallery can animate it
+              // live photo = short video clip (TikTok itself saves it as a normal MP4)
               private fun saveLive(m: Media, n: Int) {
-                  val vid = readAll(pickBest(m), m.ref)
-                  val still: ByteArray? = if (m.still.isNotEmpty()) {
-                      try { readAll(m.still, m.ref) } catch (e: Exception) { null }
-                  } else null
-                  val name = "easydl_${System.currentTimeMillis()}_$n"
-                  val isJpg = still != null && still.size > 4 && still[0] == 0xFF.toByte() && still[1] == 0xD8.toByte()
-                  if (isJpg && still != null) writeBytes(motion(still, vid), "${name}_live.jpg", "image/jpeg", false)
-                  else writeBytes(vid, "$name.mp4", "video/mp4", true)
-              }
-
-              private fun motion(jpg: ByteArray, mp4: ByteArray): ByteArray {
-                  val xmp = ("<?xpacket begin=\"\uFEFF\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>" +
-                      "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">" +
-                      "<rdf:Description rdf:about=\"\" xmlns:GCamera=\"http://ns.google.com/photos/1.0/camera/\" " +
-                      "xmlns:Container=\"http://ns.google.com/photos/1.0/container/\" " +
-                      "xmlns:Item=\"http://ns.google.com/photos/1.0/container/item/\" " +
-                      "GCamera:MotionPhoto=\"1\" GCamera:MotionPhotoVersion=\"1\" GCamera:MotionPhotoPresentationTimestampUs=\"0\" " +
-                      "GCamera:MicroVideo=\"1\" GCamera:MicroVideoVersion=\"1\" GCamera:MicroVideoOffset=\"${mp4.size}\" " +
-                      "GCamera:MicroVideoPresentationTimestampUs=\"0\"><Container:Directory><rdf:Seq>" +
-                      "<rdf:li rdf:parseType=\"Resource\"><Container:Item Item:Mime=\"image/jpeg\" Item:Semantic=\"Primary\" Item:Length=\"0\" Item:Padding=\"0\"/></rdf:li>" +
-                      "<rdf:li rdf:parseType=\"Resource\"><Container:Item Item:Mime=\"video/mp4\" Item:Semantic=\"MotionPhoto\" Item:Length=\"${mp4.size}\" Item:Padding=\"0\"/></rdf:li>" +
-                      "</rdf:Seq></Container:Directory></rdf:Description></rdf:RDF></x:xmpmeta><?xpacket end=\"w\"?>").toByteArray(Charsets.UTF_8)
-                  val hdr = "http://ns.adobe.com/xap/1.0/\u0000".toByteArray(Charsets.US_ASCII)
-                  val len = 2 + hdr.size + xmp.size
-                  val out = ByteArrayOutputStream(jpg.size + mp4.size + len + 8)
-                  out.write(0xFF); out.write(0xD8); out.write(0xFF); out.write(0xE1)
-                  out.write(len shr 8); out.write(len and 0xFF)
-                  out.write(hdr); out.write(xmp)
-                  out.write(jpg, 2, jpg.size - 2)
-                  out.write(mp4)
-                  return out.toByteArray()
+                  writeBytes(readAll(pickBest(m), m.ref), "easydl_live_${System.currentTimeMillis()}_$n.mp4", "video/mp4", true)
               }
 
               // download in 9 MB pieces (YouTube slows down or blocks one huge request)
