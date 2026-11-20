@@ -52,8 +52,8 @@ jobs:
               applicationId 'com.pribadi.easydl'
               minSdk 29
               targetSdk 34
-              versionCode 9
-              versionName '4.5'
+              versionCode 10
+              versionName '4.6'
             }
             compileOptions {
               sourceCompatibility JavaVersion.VERSION_17
@@ -164,6 +164,7 @@ jobs:
           import android.provider.MediaStore
           import android.util.Base64
           import android.view.Gravity
+          import android.view.MotionEvent
           import android.view.View
           import android.view.animation.DecelerateInterpolator
           import android.webkit.CookieManager
@@ -201,7 +202,8 @@ jobs:
               val asize: Long = 0L,
               val ytId: String = "",
               val itag: Int = 0,
-              val aitag: Int = 0
+              val aitag: Int = 0,
+              val hls: Boolean = false
           )
 
           class Fmt(val url: String, val h: Int, val mime: String, val codecs: String, val br: Long, val size: Long, val fps: Int, val itag: Int = 0, val lang: Int = 0)
@@ -251,10 +253,14 @@ jobs:
               private var fbStall = 0
               private var vetting = false
               private val netVideos = ArrayList<String>()
+              private val genUrls = ArrayList<String>()
+              private val genRef = HashMap<String, String>()
+              private var genBase = ""
+              private var genSeen = -1
 
               private val UA = "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36"
               private val UAD = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
-              private val LINK = Regex("https?://(?:[\\w-]+\\.)*(?:tiktok\\.com|x\\.com|twitter\\.com|threads\\.net|threads\\.com|facebook\\.com|fb\\.watch|fb\\.com|instagram\\.com|youtube\\.com|youtu\\.be)/\\S*")
+              private val LINK = Regex("https?://[^\\s<>\"']+")
               private class YC(val name: String, val id: String, val ver: String, val ua: String, val android: Boolean = false, val embed: Boolean = false, val vision: Boolean = false)
 
               private val YT = listOf(
@@ -283,7 +289,34 @@ jobs:
           Array.from(document.querySelectorAll('script[type="application/json"]')).forEach(function(s){var t=s.textContent;if(M(t))B.put(t)});
           var h=document.documentElement.outerHTML;if(M(h))B.put(h)})()"""
 
+              private val ADS = listOf("doubleclick", "googlesyndication", "googleadservices", "adsterra", "popads", "popcash", "propeller",
+                  "exoclick", "juicyads", "trafficjunky", "clickadu", "hilltopads", "onclickads", "adnxs", "taboola", "outbrain", "histats",
+                  "adsco.re", "a-ads", "richads", "pushwhy", "monetag", "profitableratecpm", "highperformanceformat", "effectivegatecpm",
+                  "creativecdn", "adform", "mgid", "revcontent", "adcash", "bidvertiser", "admaven", "ad-maven", "popunder", "/ads/", "adserver",
+                  "adservice", "pagead", "syndication.", "trafficstars", "tsyndicate", "ero-advertising", "adskeeper", "yllix", "clickaine", "adspyglass")
+
+              private val GEN_JS = """(function(){
+          var send=function(u){try{if(u&&u.indexOf('http')==0)B.v(u,location.href)}catch(e){}};
+          var vs=document.querySelectorAll('video,source');
+          for(var i=0;i<vs.length;i++){var e=vs[i];send(e.currentSrc);send(e.src);try{if(e.tagName=='VIDEO'){e.muted=true;var p=e.play();if(p&&p.catch)p.catch(function(){})}}catch(x){}}
+          var h=document.documentElement.innerHTML.replace(/\\\//g,'/').replace(/\\u0026/g,'&').replace(/&amp;/g,'&');
+          var m=h.match(/https?:\/\/[^"'\s\\<>()]+?\.(?:mp4|m3u8|webm|mkv)(?:\?[^"'\s\\<>()]*)?/g);
+          if(m)for(var j=0;j<m.length&&j<40;j++)send(m[j]);
+          var bt=document.querySelectorAll('button,a,div[role=button],input[type=button],input[type=submit],span');
+          for(var k=0;k<bt.length&&k<400;k++){var t=(bt[k].innerText||bt[k].value||'').trim().toLowerCase();if(t.length>0&&t.length<40&&/(turned it off|i('| a)?m human|not a robot|click to play|tap to play|watch now|play video|continue to video)/.test(t)){try{bt[k].click()}catch(x){}}}
+          var pl=document.querySelectorAll('.vjs-big-play-button,.jw-icon-display,.plyr__control--overlaid,.play-button,[class*=big-play],[aria-label=Play],[title=Play]');
+          for(var q=0;q<pl.length;q++){try{pl[q].click()}catch(x){}}
+          })();"""
+
               inner class Bridge(private val g: Int) {
+                  @JavascriptInterface
+                  fun v(u: String, ref: String) {
+                      if (g != gen) return
+                      synchronized(genUrls) {
+                          if (genUrls.size < 60 && genUrls.none { it == u }) { genUrls.add(u); genRef[u] = ref }
+                      }
+                  }
+
                   @JavascriptInterface
                   fun put(s: String) {
                       if (g != gen) return
@@ -464,6 +497,7 @@ jobs:
                       "x" -> 6000L
                       "yt" -> 8000L
                       "tt", "th", "ig" -> 16000L
+                      "gen" -> 24000L
                       else -> 22000L
                   }
                   anim = ValueAnimator.ofFloat(0f, 0.93f).apply {
@@ -491,20 +525,36 @@ jobs:
 
               private fun get(u: String): String = open(u).inputStream.bufferedReader().readText()
 
+              private fun baseOf(host: String): String {
+                  val p = host.lowercase().split(".")
+                  if (p.size <= 2) return host.lowercase()
+                  return if (p[p.size - 2].length <= 3 && p.last().length == 2) p.takeLast(3).joinToString(".") else p.takeLast(2).joinToString(".")
+              }
+
               // every WebView is brand new for every link, so data from an earlier link can never leak in
-              private fun newWeb(my: Int, ua: String): WebView {
+              private fun newWeb(my: Int, ua: String, big: Boolean = false): WebView {
                   host.removeAllViews()
                   web?.destroy()
                   val w = WebView(this)
                   w.settings.javaScriptEnabled = true
                   w.settings.domStorageEnabled = true
                   w.settings.userAgentString = ua
+                  if (plat == "gen") {
+                      w.settings.mediaPlaybackRequiresUserGesture = false
+                      w.settings.javaScriptCanOpenWindowsAutomatically = false
+                      w.settings.setSupportMultipleWindows(false)
+                  }
                   CookieManager.getInstance().setAcceptCookie(true)
                   CookieManager.getInstance().setAcceptThirdPartyCookies(w, true)
                   w.addJavascriptInterface(Bridge(my), "B")
                   w.webViewClient = object : WebViewClient() {
                       override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                           val u = request.url
+                          if (plat == "gen" && (u.scheme == "http" || u.scheme == "https")) {
+                              // ads open other websites: never leave the page we started on
+                              if (request.isForMainFrame && genBase.isNotEmpty() && baseOf(u.host ?: "") != genBase) return true
+                              return false
+                          }
                           if (u.scheme == "http" || u.scheme == "https") return false
                           val id = u.getQueryParameter("id")?.substringBefore("_")
                           if (plat == "th" && u.scheme == "barcelona" && id != null && id.isNotEmpty() && id.all { it.isDigit() }) {
@@ -516,6 +566,23 @@ jobs:
                       }
 
                       override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): android.webkit.WebResourceResponse? {
+                          if (plat == "gen") {
+                              val gu = request.url.toString()
+                              val gl = gu.lowercase()
+                              if (ADS.any { gl.contains(it) }) {
+                                  return android.webkit.WebResourceResponse("text/plain", "utf-8", java.io.ByteArrayInputStream(ByteArray(0)))
+                              }
+                              val gp = gl.substringBefore("?").substringBefore("#")
+                              if (gp.endsWith(".mp4") || gp.endsWith(".m3u8") || gp.endsWith(".webm") || gp.endsWith(".mkv") || gp.endsWith(".mov") || gp.endsWith(".m4v") || gl.contains("mime=video")) {
+                                  synchronized(genUrls) {
+                                      if (genUrls.size < 60 && genUrls.none { it == gu }) {
+                                          genUrls.add(gu)
+                                          genRef[gu] = request.requestHeaders?.get("Referer") ?: lastLink
+                                      }
+                                  }
+                              }
+                              return null
+                          }
                           if (plat == "tt") {
                               val u = request.url.toString()
                               val l = u.lowercase()
@@ -533,10 +600,11 @@ jobs:
                       }
 
                       override fun onPageFinished(view: WebView, url: String?) {
+                          if (plat == "gen" && genBase.isEmpty() && url != null) genBase = baseOf(Uri.parse(url).host ?: "")
                           if (plat != "tt") view.evaluateJavascript(HOOK, null)
                       }
                   }
-                  host.addView(w, FrameLayout.LayoutParams(1, 1))
+                  if (big) host.addView(w, FrameLayout.LayoutParams(dp(360), dp(640))) else host.addView(w, FrameLayout.LayoutParams(1, 1))
                   web = w
                   return w
               }
@@ -550,7 +618,8 @@ jobs:
                       s.contains("instagram.com") -> "ig"
                       s.contains("youtube.com") || s.contains("youtu.be") -> "yt"
                       s.contains("facebook.com") || s.contains("fb.watch") || s.contains("fb.com") -> "fb"
-                      else -> "x"
+                      Regex("^https?://(?:[\\w-]+\\.)*(?:x|twitter)\\.com/").containsMatchIn(s) -> "x"
+                      else -> "gen"
                   }
               }
 
@@ -576,6 +645,9 @@ jobs:
                   fbStall = 0
                   vetting = false
                   synchronized(netVideos) { netVideos.clear() }
+                  synchronized(genUrls) { genUrls.clear(); genRef.clear() }
+                  genBase = ""
+                  genSeen = -1
                   synchronized(captured) { captured.clear(); seen.clear() }
                   plat = platformOf(link)
                   say("Loading…")
@@ -585,6 +657,7 @@ jobs:
                       "yt" -> startYt(link, my)
                       "ig" -> startIg(link, my)
                       "fb" -> startFb(link, my)
+                      "gen" -> startGen(link, my)
                       else -> startWeb(link, my)
                   }
               }
@@ -774,6 +847,18 @@ jobs:
                               return
                           }
                       }
+                      "gen" -> {
+                          w.evaluateJavascript(GEN_JS, null)
+                          if (tick >= 3 && tick % 3 == 0 && tick <= 30) tapCenter(w)
+                          val c = synchronized(genUrls) { ArrayList(genUrls) }
+                          if (c.isNotEmpty()) {
+                              if (genSeen < 0) genSeen = tick
+                              if (tick >= genSeen + 2) {
+                                  pickGen(my, c)
+                                  return
+                              }
+                          }
+                      }
                       "th", "ig" -> {
                           val rx = if (plat == "th") "/(?:post|t)/([A-Za-z0-9_-]+)" else "/(?:p|reel|reels|tv)/([A-Za-z0-9_-]+)"
                           val code = Regex(rx).find(url)?.groupValues?.get(1) ?: knownCode
@@ -830,7 +915,11 @@ jobs:
                       if (plat == "ig" && !hasCookie("https://www.instagram.com", "sessionid=")) { showLogin("Instagram", lastLink); return }
                       if (plat == "fb" && !hasCookie("https://www.facebook.com", "c_user=")) { showLogin("Facebook", lastLink); return }
                   }
-                  if (tick >= (if (plat == "fb" && fbTotal > 0) 30 else 25)) {
+                  if (tick >= (if (plat == "gen") 40 else if (plat == "fb" && fbTotal > 0) 30 else 25)) {
+                      if (plat == "gen") {
+                          fail(my, "No video found on this page (no ads were opened). If the site asks you to turn off VPN or WARP, turn it off and try again.")
+                          return
+                      }
                       if (plat == "th" && !thLoginDone && !hasCookie("https://www.threads.com", "sessionid=")) { showLogin("Threads", lastLink); return }
                       if (plat == "ig" && !hasCookie("https://www.instagram.com", "sessionid=")) { showLogin("Instagram", lastLink); return }
                       if (plat == "fb" && !hasCookie("https://www.facebook.com", "c_user=")) { showLogin("Facebook", lastLink); return }
@@ -838,6 +927,73 @@ jobs:
                       return
                   }
                   handler.postDelayed({ poll(my, tick + 1) }, 1000)
+              }
+
+              // ---------- any other website: no ads, straight to the video ----------
+              private fun tapCenter(w: WebView) {
+                  val x = w.width / 2f
+                  val y = w.height / 2f
+                  val t = SystemClock.uptimeMillis()
+                  w.dispatchTouchEvent(MotionEvent.obtain(t, t, MotionEvent.ACTION_DOWN, x, y, 0))
+                  w.dispatchTouchEvent(MotionEvent.obtain(t, t + 60, MotionEvent.ACTION_UP, x, y, 0))
+              }
+
+              private fun originOf(u: String): String = try {
+                  val x = URL(u)
+                  x.protocol + "://" + x.host + "/"
+              } catch (e: Exception) { u }
+
+              private fun startGen(link: String, my: Int) {
+                  val low = link.lowercase().substringBefore("?").substringBefore("#")
+                  if (Regex("\\.(mp4|webm|mkv|mov|m4v)$").containsMatchIn(low)) {
+                      show(listOf(Media(link, true, "", originOf(link))))
+                      return
+                  }
+                  if (low.endsWith(".m3u8")) {
+                      show(listOf(Media(link, true, "", originOf(link), hls = true)))
+                      return
+                  }
+                  say("Opening the page without ads… (up to 40 seconds)")
+                  newWeb(my, UAD, true).loadUrl(link)
+                  poll(my, 0)
+              }
+
+              // choose the best video among everything the page loaded
+              private fun pickGen(my: Int, c: List<String>) {
+                  pollStop = true
+                  say("Choosing the best quality…")
+                  Thread {
+                      try {
+                          val ok = c.filter { u -> ADS.none { u.lowercase().contains(it) } }
+                          val hls = ok.filter { it.lowercase().substringBefore("?").endsWith(".m3u8") }
+                          val direct = ok.filter { it !in hls }
+                          var best: Media? = null
+                          var bestSize = -1L
+                          for (u in direct) {
+                              val ref = genRef[u] ?: lastLink
+                              val sz = try { sizeOf(u, ref) } catch (e: Exception) { -1L }
+                              if (sz > bestSize) { bestSize = sz; best = Media(u, true, "", ref) }
+                          }
+                          if (best != null && bestSize in 0..300000 && hls.isNotEmpty()) best = null
+                          if (best == null && hls.isNotEmpty()) {
+                              var pick = hls[0]
+                              for (u in hls) {
+                                  val body = try { txt(u, genRef[u] ?: lastLink) } catch (e: Exception) { "" }
+                                  if (body.contains("#EXT-X-STREAM-INF")) { pick = u; break }
+                              }
+                              best = Media(pick, true, "", genRef[pick] ?: lastLink, hls = true)
+                          }
+                          val chosen2 = best
+                          runOnUiThread {
+                              if (my == gen) {
+                                  if (chosen2 == null) fail(my, "Found no downloadable video on this page.")
+                                  else show(listOf(chosen2))
+                              }
+                          }
+                      } catch (e: Exception) {
+                          fail(my, "Failed: ${e.message}")
+                      }
+                  }.start()
               }
 
               // last resort for Threads: read the public embed page without JavaScript
@@ -1641,6 +1797,7 @@ jobs:
 
               private fun save(m: Media, n: Int) {
                   if (m.audio.isNotEmpty()) { saveMux(m, n); return }
+                  if (m.hls) { saveHls(m, n); return }
                   if (m.live) { saveLive(m, n); return }
                   val url = pickBest(m)
                   val path = url.substringBefore("?").lowercase()
@@ -1677,168 +1834,19 @@ jobs:
                   finishItem(item)
               }
 
-              private fun readAll(u: String, ref: String): ByteArray = open(u, ref).inputStream.use { it.readBytes() }
+              private fun txt(u: String, ref: String): String = open(u, ref).inputStream.bufferedReader().readText()
 
-              private fun writeBytes(b: ByteArray, name: String, mime: String, video: Boolean) {
-                  val item = newItem(name, mime, video)
-                  try {
-                      contentResolver.openOutputStream(item.first)!!.use { it.write(b) }
-                  } catch (e: Exception) {
-                      contentResolver.delete(item.first, null, null)
-                      throw e
-                  }
-                  finishItem(item)
+              private fun absUrl(base: String, rel: String): String = URL(URL(base), rel).toString()
+
+              private fun attr(line: String, key: String): String? =
+                  Regex("[:,]" + key + "=(\"[^\"]*\"|[^,]*)").find(line)?.groupValues?.get(1)?.trim('"')
+
+              private class Seg(val url: String, val keyUrl: String, val iv: ByteArray?, val seq: Long)
+              private class Pl(val segs: List<Seg>, val map: String, val protectedStream: Boolean)
+
+              private fun hexIv(s: String): ByteArray {
+                  val h = s.removePrefix("0x").removePrefix("0X").padStart(32, '0')
+                  return ByteArray(16) { h.substring(it * 2, it * 2 + 2).toInt(16).toByte() }
               }
 
-              // live photo = short video clip (TikTok itself saves it as a normal MP4)
-              private fun saveLive(m: Media, n: Int) {
-                  val b = readAll(pickBest(m), m.ref)
-                  if (kindOf(b, minOf(16, b.size)) == "audio") throw IOException("This clip is sound only, not a video")
-                  writeBytes(b, "easydl_live_${System.currentTimeMillis()}_$n.mp4", "video/mp4", true)
-              }
-
-              private class Cur(var pos: Long = 0L, var pct: Int = -1)
-
-              private fun pull(url: String, ua: String, endv: Long, useParam: Boolean, out: OutputStream, buf: ByteArray, st: Cur, size: Long, label: String) {
-                  val start = st.pos
-                  val u = if (useParam) "$url&range=$start-$endv" else url
-                  val c = open(u, "https://www.youtube.com/", ua)
-                  c.setRequestProperty("Origin", "https://www.youtube.com")
-                  if (!useParam) c.setRequestProperty("Range", "bytes=$start-$endv")
-                  val code = c.responseCode
-                  if (code >= 400) { c.disconnect(); throw IOException("HTTP $code") }
-                  if (!useParam && code == 200 && start > 0) { c.disconnect(); throw IOException("range ignored") }
-                  var got = 0L
-                  c.inputStream.use { i ->
-                      var r = i.read(buf)
-                      while (r >= 0) {
-                          out.write(buf, 0, r)
-                          got += r
-                          st.pos += r
-                          val pct = (st.pos * 100 / size).toInt()
-                          if (pct != st.pct) { st.pct = pct; say("$label $pct%") }
-                          if (st.pos > endv) break
-                          r = i.read(buf)
-                      }
-                  }
-                  if (got == 0L) throw IOException("empty")
-              }
-
-              // download in pieces; when YouTube blocks a piece, resume from the same spot through another YouTube route
-              private fun fetchChunks(url0: String, out: OutputStream, ua0: String, size: Long, label: String, id: String, itag: Int) {
-                  val buf = ByteArray(65536)
-                  if (size <= 0) {
-                      val c = open(url0, "", ua0)
-                      c.inputStream.use { i ->
-                          var r = i.read(buf)
-                          while (r >= 0) { out.write(buf, 0, r); r = i.read(buf) }
-                      }
-                      return
-                  }
-                  val srcs = ArrayList<Pair<String, String>>()
-                  srcs.add(Pair(url0, ua0))
-                  var expanded = false
-                  var cur = 0
-                  val st = Cur()
-                  while (st.pos < size) {
-                      var ok = false
-                      var why = ""
-                      var idx = cur
-                      while (!ok) {
-                          if (idx >= srcs.size) {
-                              if (expanded || id.isEmpty() || itag <= 0) break
-                              expanded = true
-                              say("$label: trying another YouTube route…")
-                              srcs.addAll(ytSources(id, itag, size, url0))
-                              if (idx >= srcs.size) break
-                          }
-                          val s = srcs[idx]
-                          for (variant in 0..1) {
-                              val len = if (variant == 0) 9437184L else 1048576L
-                              val endv = minOf(st.pos + len, size) - 1
-                              try {
-                                  pull(s.first, s.second, endv, variant == 1, out, buf, st, size, label)
-                                  ok = true
-                                  break
-                              } catch (e: IOException) {
-                                  why = e.message ?: "network error"
-                                  if (st.pos >= size) { ok = true; break }
-                              }
-                          }
-                          if (ok) cur = idx else idx++
-                      }
-                      if (!ok) throw IOException("YouTube stopped the download at ${maxOf(st.pct, 0)}% ($why)")
-                  }
-              }
-
-              private fun saveMux(m: Media, n: Int) {
-                  val vf = File(cacheDir, "v_${System.nanoTime()}.bin")
-                  val af = File(cacheDir, "a_${System.nanoTime()}.bin")
-                  try {
-                      vf.outputStream().use { fetchChunks(m.url, it, m.ua, m.size, "Video", m.ytId, m.itag) }
-                      af.outputStream().use { fetchChunks(m.audio, it, m.ua, m.asize, "Audio", m.ytId, m.aitag) }
-                      say("Merging video and audio…")
-                      val ext = if (m.webm) "webm" else "mp4"
-                      val item = newItem("easydl_yt_${System.currentTimeMillis()}_$n.$ext", if (m.webm) "video/webm" else "video/mp4", true)
-                      try {
-                          contentResolver.openFileDescriptor(item.first, "rw")!!.use { mux(vf.path, af.path, it.fileDescriptor, m.webm) }
-                      } catch (e: Exception) {
-                          contentResolver.delete(item.first, null, null)
-                          throw e
-                      }
-                      finishItem(item)
-                  } finally {
-                      vf.delete()
-                      af.delete()
-                  }
-              }
-
-              private fun trackOf(ex: MediaExtractor, prefix: String): Int {
-                  for (i in 0 until ex.trackCount) {
-                      if (ex.getTrackFormat(i).getString(MediaFormat.KEY_MIME)?.startsWith(prefix) == true) return i
-                  }
-                  throw IOException("No $prefix track")
-              }
-
-              private fun mux(vp: String, ap: String, fd: FileDescriptor, webm: Boolean) {
-                  val vex = MediaExtractor()
-                  vex.setDataSource(vp)
-                  val aex = MediaExtractor()
-                  aex.setDataSource(ap)
-                  val vt = trackOf(vex, "video/")
-                  val at = trackOf(aex, "audio/")
-                  vex.selectTrack(vt)
-                  aex.selectTrack(at)
-                  val mx = MediaMuxer(fd, if (webm) MediaMuxer.OutputFormat.MUXER_OUTPUT_WEBM else MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
-                  val vi = mx.addTrack(vex.getTrackFormat(vt))
-                  val ai = mx.addTrack(aex.getTrackFormat(at))
-                  mx.start()
-                  val buf = ByteBuffer.allocate(8 * 1024 * 1024)
-                  val info = MediaCodec.BufferInfo()
-                  while (true) {
-                      val vtm = vex.sampleTime
-                      val atm = aex.sampleTime
-                      if (vtm < 0 && atm < 0) break
-                      val useV = vtm >= 0 && (atm < 0 || vtm <= atm)
-                      val ex = if (useV) vex else aex
-                      val sz = ex.readSampleData(buf, 0)
-                      if (sz < 0) break
-                      info.set(0, sz, ex.sampleTime, ex.sampleFlags)
-                      mx.writeSampleData(if (useV) vi else ai, buf, info)
-                      ex.advance()
-                  }
-                  mx.stop()
-                  mx.release()
-                  vex.release()
-                  aex.release()
-              }
-          }
-          EOF
-      - name: Build
-        run: gradle assembleDebug --no-daemon
-      - name: Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: v${{ github.run_number }}
-          name: Easy Downloader v${{ github.run_number }}
-          files: app/build/outputs/apk/debug/app-debug.apk
+              private fun parseM
