@@ -41,8 +41,8 @@ jobs:
                   applicationId = "com.pribadi.easydl"
                   minSdk = 29
                   targetSdk = 34
-                  versionCode = 1
-                  versionName = "1.0"
+                  versionCode = 2
+                  versionName = "2.0"
               }
               compileOptions {
                   sourceCompatibility = JavaVersion.VERSION_17
@@ -71,9 +71,11 @@ jobs:
           cat > app/src/main/java/com/pribadi/easydl/MainActivity.kt <<'EOF'
           package com.pribadi.easydl
 
+          import android.animation.ValueAnimator
           import android.app.Activity
           import android.content.ClipboardManager
           import android.content.ContentValues
+          import android.graphics.Bitmap
           import android.graphics.BitmapFactory
           import android.graphics.Color
           import android.os.Bundle
@@ -82,6 +84,7 @@ jobs:
           import android.provider.MediaStore
           import android.view.Gravity
           import android.view.View
+          import android.view.animation.LinearInterpolator
           import android.webkit.CookieManager
           import android.webkit.JavascriptInterface
           import android.webkit.WebResourceRequest
@@ -90,10 +93,14 @@ jobs:
           import android.widget.*
           import org.json.JSONArray
           import org.json.JSONObject
+          import java.math.BigInteger
           import java.net.HttpURLConnection
           import java.net.URL
 
-          class Media(val url: String, val video: Boolean, val thumb: String, val ref: String = "")
+          class Media(
+              val url: String, val video: Boolean, val thumb: String,
+              val ref: String = "", val live: Boolean = false
+          )
 
           class MainActivity : Activity() {
               private lateinit var input: EditText
@@ -101,7 +108,11 @@ jobs:
               private lateinit var list: LinearLayout
               private lateinit var btn: Button
               private lateinit var web: WebView
-              private var allBox: CheckBox? = null
+              private lateinit var allBox: CheckBox
+              private lateinit var track: FrameLayout
+              private lateinit var cat: TextView
+              private lateinit var mouse: TextView
+              private var anim: ValueAnimator? = null
               private var bulk = false
               private var chosen = BooleanArray(0)
               private val items = ArrayList<Media>()
@@ -111,9 +122,21 @@ jobs:
               private val handler = Handler(Looper.getMainLooper())
               private var gen = 0
               private var lastLink = ""
+              private var knownCode = ""
+              private var plat = "tt"
+              private var diag = ""
               private val UA = "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36"
 
-              private val SCRIPTS = """Array.from(document.querySelectorAll('script[type="application/json"]')).forEach(function(s){var t=s.textContent;if(t.indexOf('itemStruct')>-1)B.put(t)})"""
+              private val HOOK = """(function(){if(window.__h)return;window.__h=1;
+          function M(t){return t.indexOf('image_versions2')>-1||t.indexOf('video_versions')>-1||t.indexOf('itemStruct')>-1}
+          var f=window.fetch;
+          if(f){window.fetch=function(){return f.apply(this,arguments).then(function(r){try{r.clone().text().then(function(t){if(M(t))B.put(t)})}catch(e){}return r})}}
+          var o=XMLHttpRequest.prototype.send;
+          XMLHttpRequest.prototype.send=function(){this.addEventListener('load',function(){try{var t=this.responseText;if(t&&M(t))B.put(t)}catch(e){}});return o.apply(this,arguments)};
+          })();"""
+
+              private val SCRIPTS = """(function(){function M(t){return t.indexOf('image_versions2')>-1||t.indexOf('video_versions')>-1||t.indexOf('itemStruct')>-1}
+          Array.from(document.querySelectorAll('script[type="application/json"]')).forEach(function(s){var t=s.textContent;if(M(t))B.put(t)})})()"""
 
               inner class Bridge {
                   @JavascriptInterface
@@ -124,14 +147,42 @@ jobs:
 
               private fun dp(n: Int) = (n * resources.displayMetrics.density).toInt()
 
+              private fun shortcode(pk: String): String {
+                  val alpha = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+                  var n = BigInteger(pk)
+                  val base = BigInteger.valueOf(64)
+                  val sb = StringBuilder()
+                  while (n.signum() > 0) {
+                      val qr = n.divideAndRemainder(base)
+                      sb.append(alpha[qr[1].toInt()])
+                      n = qr[0]
+                  }
+                  return sb.reverse().toString()
+              }
+
               override fun onCreate(savedInstanceState: Bundle?) {
                   super.onCreate(savedInstanceState)
-                  input = EditText(this).apply { hint = "Link TikTok / X"; setSingleLine() }
+                  input = EditText(this).apply { hint = "Link Threads / X / TikTok"; setSingleLine() }
                   status = TextView(this).apply {
-                      text = "Salin link TikTok atau X, lalu buka aplikasi ini."
+                      text = "Salin link Threads, X, atau TikTok, lalu buka aplikasi ini."
                       setPadding(0, dp(8), 0, dp(8))
                   }
+                  mouse = TextView(this).apply { text = "🐁"; textSize = 26f }
+                  cat = TextView(this).apply { text = "🐈"; textSize = 30f }
+                  track = FrameLayout(this).apply {
+                      visibility = View.GONE
+                      setPadding(0, dp(12), 0, 0)
+                      addView(mouse, FrameLayout.LayoutParams(-2, -2))
+                      addView(cat, FrameLayout.LayoutParams(-2, -2))
+                  }
                   list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+                  allBox = CheckBox(this).apply {
+                      text = "Pilih semua"
+                      visibility = View.GONE
+                      setOnCheckedChangeListener { _, c ->
+                          if (!bulk) for (i in chosen.indices) setSel(i, c)
+                      }
+                  }
                   btn = Button(this).apply {
                       text = "Download"
                       isEnabled = false
@@ -144,8 +195,21 @@ jobs:
                   web.addJavascriptInterface(Bridge(), "B")
                   web.webViewClient = object : WebViewClient() {
                       override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
-                          val s = request.url.scheme
-                          return s != "http" && s != "https"
+                          val u = request.url
+                          if (u.scheme == "http" || u.scheme == "https") return false
+                          val id = u.getQueryParameter("id")?.substringBefore("_")
+                          if (u.scheme == "barcelona" && id != null && id.isNotEmpty() && id.all { it.isDigit() }) {
+                              val c = shortcode(id)
+                              knownCode = c
+                              view.loadUrl("https://www.threads.com/t/$c")
+                          }
+                          return true
+                      }
+                      override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
+                          if (plat == "th") view.evaluateJavascript(HOOK, null)
+                      }
+                      override fun onPageFinished(view: WebView, url: String?) {
+                          if (plat == "th") view.evaluateJavascript(HOOK, null)
                       }
                   }
                   val scroll = ScrollView(this).apply { addView(list) }
@@ -154,7 +218,12 @@ jobs:
                       setPadding(dp(16), dp(40), dp(16), dp(16))
                       addView(input)
                       addView(status)
+                      addView(track, LinearLayout.LayoutParams(-1, dp(56)))
                       addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
+                      addView(LinearLayout(this@MainActivity).apply {
+                          gravity = Gravity.END
+                          addView(allBox)
+                      }, LinearLayout.LayoutParams(-1, -2))
                       addView(btn)
                       addView(web, LinearLayout.LayoutParams(1, 1))
                   })
@@ -166,7 +235,8 @@ jobs:
                   val cm = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
                   val text = cm.primaryClip?.takeIf { it.itemCount > 0 }
                       ?.getItemAt(0)?.coerceToText(this)?.toString() ?: return
-                  val link = Regex("https?://(?:[\\w-]+\\.)?(?:tiktok\\.com|x\\.com|twitter\\.com)/\\S+").find(text)?.value ?: return
+                  val link = Regex("https?://(?:[\\w-]+\\.)?(?:tiktok\\.com|x\\.com|twitter\\.com|threads\\.net|threads\\.com)/\\S+")
+                      .find(text)?.value ?: return
                   if (link == lastLink) return
                   lastLink = link
                   input.setText(link)
@@ -174,6 +244,34 @@ jobs:
               }
 
               private fun say(s: String) = runOnUiThread { status.text = s }
+
+              private fun fail(s: String) {
+                  lastLink = ""
+                  busy(false)
+                  say(s)
+              }
+
+              // animasi kucing mengejar tikus
+              private fun busy(on: Boolean) = runOnUiThread {
+                  anim?.cancel()
+                  if (!on) { track.visibility = View.GONE; return@runOnUiThread }
+                  track.visibility = View.VISIBLE
+                  val w = (resources.displayMetrics.widthPixels - dp(32)).toFloat()
+                  anim = ValueAnimator.ofFloat(0f, 1f).apply {
+                      duration = 3500
+                      repeatCount = ValueAnimator.INFINITE
+                      interpolator = LinearInterpolator()
+                      addUpdateListener {
+                          val p = it.animatedValue as Float
+                          val mx = w - p * (w + dp(90))
+                          mouse.translationX = mx
+                          cat.translationX = mx + dp(60)
+                          mouse.translationY = -Math.abs(Math.sin(p * 50.0)).toFloat() * dp(8)
+                          cat.translationY = -Math.abs(Math.sin(p * 50.0 + 1.2)).toFloat() * dp(10)
+                      }
+                      start()
+                  }
+              }
 
               private fun open(u: String, ref: String): HttpURLConnection {
                   val c = URL(u).openConnection() as HttpURLConnection
@@ -187,54 +285,64 @@ jobs:
                   return c
               }
 
+              private fun get(u: String): String = open(u, "").inputStream.bufferedReader().readText()
+
               private fun load(link: String) {
                   list.removeAllViews()
                   btn.isEnabled = false
-                  val isX = Regex("https?://(?:[\\w-]+\\.)?(?:x|twitter)\\.com/").containsMatchIn(link)
-                  if (isX) {
+                  allBox.visibility = View.GONE
+                  diag = ""
+                  if (Regex("https?://(?:[\\w-]+\\.)?(?:x|twitter)\\.com/").containsMatchIn(link)) {
                       val id = Regex("/status(?:es)?/(\\d+)").find(link)?.groupValues?.get(1)
                       if (id == null) {
-                          lastLink = ""
-                          say("Link X tidak dikenali. Pakai link postingan (yang ada /status/angka).")
+                          fail("Link X tidak dikenali. Pakai link postingan (yang ada /status/angka).")
                           return
                       }
-                      loadX(id)
+                      val user = Regex("(?:x|twitter)\\.com/([A-Za-z0-9_]+)/status").find(link)?.groupValues?.get(1) ?: "i"
+                      loadX(user, id)
                   } else {
-                      loadTikTok(link)
+                      plat = if (link.contains("tiktok.com")) "tt" else "th"
+                      loadWeb(link)
                   }
               }
 
               // ---------- X ----------
-              private fun loadX(id: String) {
+              private fun loadX(user: String, id: String) {
                   say("Mengambil dari X...")
+                  busy(true)
                   val my = ++gen
                   val js = """(function(){return ((Number('$id')/1e15)*Math.PI).toString(36).replace(/(0+|\.)/g,'')})()"""
                   web.evaluateJavascript(js) { r ->
                       val token = (r ?: "").trim('"')
                       Thread {
                           try {
-                              val c = open("https://cdn.syndication.twimg.com/tweet-result?id=$id&lang=en&token=$token", "")
-                              val body = c.inputStream.bufferedReader().readText()
-                              val found = parseX(body)
+                              var found: List<Media> = try {
+                                  parseX(get("https://cdn.syndication.twimg.com/tweet-result?id=$id&lang=en&token=$token"))
+                              } catch (e: Exception) { emptyList() }
+                              if (found.isEmpty()) found = viaFx(user, id, 0)
                               runOnUiThread {
                                   if (my == gen) {
-                                      if (found.isEmpty()) {
-                                          lastLink = ""
-                                          say("Foto/video tidak ditemukan. Postingan mungkin tanpa media, dibatasi, atau berkonten sensitif.")
-                                      } else show(found)
+                                      if (found.isEmpty()) fail("Foto/video tidak ditemukan. Mungkin postingannya tanpa media, dihapus, atau akunnya dikunci.")
+                                      else show(found)
                                   }
                               }
                           } catch (e: Exception) {
-                              lastLink = ""
-                              say("Gagal: ${e.message}")
+                              fail("Gagal: ${e.message}")
                           }
                       }.start()
                   }
               }
 
               private fun parseX(text: String): List<Media> {
-                  val md = JSONObject(text).optJSONArray("mediaDetails") ?: return emptyList()
+                  val j = JSONObject(text)
                   val out = ArrayList<Media>()
+                  xMedia(j.optJSONArray("mediaDetails"), out)
+                  xMedia(j.optJSONObject("quoted_tweet")?.optJSONArray("mediaDetails"), out)
+                  return out
+              }
+
+              private fun xMedia(md: JSONArray?, out: ArrayList<Media>) {
+                  if (md == null) return
                   for (i in 0 until md.length()) {
                       val m = md.optJSONObject(i) ?: continue
                       val base = m.optString("media_url_https")
@@ -254,13 +362,57 @@ jobs:
                           if (best.isNotEmpty()) out.add(Media(best, true, thumb))
                       }
                   }
+              }
+
+              // cadangan: FxTwitter (bisa baca postingan sensitif, kutipan, dan link ke postingan lain)
+              private fun viaFx(user: String, id: String, depth: Int): List<Media> {
+                  val body = try { get("https://api.fxtwitter.com/$user/status/$id") } catch (e: Exception) { return emptyList() }
+                  val t = try { JSONObject(body).optJSONObject("tweet") } catch (e: Exception) { null } ?: return emptyList()
+                  val out = ArrayList<Media>()
+                  fxMedia(t, out)
+                  fxMedia(t.optJSONObject("quote"), out)
+                  if (out.isEmpty() && depth == 0) {
+                      val others = Regex("status(?:es)?/(\\d+)").findAll(t.optString("text"))
+                          .map { it.groupValues[1] }.filter { it != id }.distinct().toList()
+                      for (o in others) {
+                          val r = viaFx("i", o, 1)
+                          if (r.isNotEmpty()) return r
+                      }
+                  }
                   return out
               }
 
-              // ---------- TikTok ----------
-              private fun loadTikTok(link: String) {
-                  say("Membuka TikTok... (tunggu sampai 25 detik)")
+              private fun fxMedia(t: JSONObject?, out: ArrayList<Media>) {
+                  val md = t?.optJSONObject("media") ?: return
+                  val all = md.optJSONArray("all")
+                  if (all != null && all.length() > 0) {
+                      for (i in 0 until all.length()) fxOne(all.optJSONObject(i), out)
+                  } else {
+                      val ph = md.optJSONArray("photos")
+                      val vi = md.optJSONArray("videos")
+                      if (ph != null) for (i in 0 until ph.length()) fxOne(ph.optJSONObject(i)?.also { it.put("type", "photo") }, out)
+                      if (vi != null) for (i in 0 until vi.length()) fxOne(vi.optJSONObject(i)?.also { it.put("type", "video") }, out)
+                  }
+              }
+
+              private fun fxOne(m: JSONObject?, out: ArrayList<Media>) {
+                  if (m == null) return
+                  val url = m.optString("url")
+                  if (url.isEmpty()) return
+                  if (m.optString("type") == "photo") {
+                      val sep = if (url.contains("?")) "&" else "?"
+                      out.add(Media("$url${sep}name=orig", false, "$url${sep}name=small"))
+                  } else {
+                      out.add(Media(url, true, m.optString("thumbnail_url")))
+                  }
+              }
+
+              // ---------- Threads & TikTok (lewat WebView) ----------
+              private fun loadWeb(link: String) {
+                  say("Membuka postingan... (tunggu sampai 25 detik)")
+                  busy(true)
                   synchronized(captured) { captured.clear(); seen.clear() }
+                  knownCode = ""
                   val my = ++gen
                   web.loadUrl(link)
                   poll(my, 0)
@@ -269,24 +421,47 @@ jobs:
               private fun poll(my: Int, tick: Int) {
                   if (my != gen) return
                   web.evaluateJavascript(SCRIPTS, null)
+                  val url = web.url ?: ""
                   val docs = synchronized(captured) { ArrayList(captured) }
-                  val found = parseTT(docs)
+                  var found: List<Media> = emptyList()
+                  if (plat == "tt") {
+                      found = parseTT(docs)
+                  } else {
+                      val code = Regex("/(?:post|t)/([A-Za-z0-9_-]+)").find(url)?.groupValues?.get(1) ?: knownCode
+                      if (code.isNotEmpty() || tick >= 12) {
+                          found = parseTh(docs, code)
+                          if (found.isEmpty() && tick >= 20 && code.isNotEmpty()) found = parseTh(docs, "")
+                      }
+                  }
                   if (found.isNotEmpty()) { show(found); return }
                   if (tick >= 25) {
-                      lastLink = ""
-                      say("Tidak ditemukan. url=${web.url}; data=${docs.size}")
+                      fail("Tidak ditemukan. url=$url; data=${docs.size}")
                       return
                   }
                   handler.postDelayed({ poll(my, tick + 1) }, 1000)
               }
 
+              private fun jsonRoots(d: String): List<JSONObject> {
+                  val s = d.trim().removePrefix("for (;;);")
+                  val roots = ArrayList<JSONObject>()
+                  try {
+                      roots.add(JSONObject(s))
+                  } catch (e: Exception) {
+                      for (line in s.split("\n")) {
+                          try { roots.add(JSONObject(line)) } catch (e2: Exception) { }
+                      }
+                  }
+                  return roots
+              }
+
+              // ----- TikTok -----
               private fun parseTT(docs: List<String>): List<Media> {
                   for (d in docs) {
-                      try {
-                          val item = findKey(JSONObject(d), "itemStruct") as? JSONObject ?: continue
+                      for (r in jsonRoots(d)) {
+                          val item = findKey(r, "itemStruct") as? JSONObject ?: continue
                           val res = collectTT(item)
                           if (res.isNotEmpty()) return res
-                      } catch (e: Exception) { }
+                      }
                   }
                   return emptyList()
               }
@@ -301,15 +476,55 @@ jobs:
                   return null
               }
 
+              // cari alamat klip gerak (live photo) di dalam data satu foto
+              private fun findMotion(n: Any?, hint: Boolean = false): String {
+                  if (n is JSONObject) {
+                      for (k in n.keys()) {
+                          val kl = k.lowercase()
+                          val h = hint || kl.contains("video") || kl.contains("live") ||
+                                  kl.contains("motion") || kl.contains("dynamic") || kl.contains("playaddr")
+                          val r = findMotion(n.opt(k), h)
+                          if (r.isNotEmpty()) return r
+                      }
+                  } else if (n is JSONArray) {
+                      for (i in 0 until n.length()) {
+                          val r = findMotion(n.opt(i), hint)
+                          if (r.isNotEmpty()) return r
+                      }
+                  } else if (n is String && hint && n.startsWith("http")) {
+                      val l = n.lowercase()
+                      val img = l.contains(".jpeg") || l.contains(".jpg") || l.contains(".webp") ||
+                                l.contains(".png") || l.contains(".heic") || l.contains("image")
+                      if (!img) return n
+                  }
+                  return ""
+              }
+
+              private fun keysOf(n: Any?, p: String, d: Int): List<String> {
+                  if (n !is JSONObject || d > 2) return emptyList()
+                  val out = ArrayList<String>()
+                  for (k in n.keys()) {
+                      out.add(p + k)
+                      out.addAll(keysOf(n.opt(k), "$p$k.", d + 1))
+                  }
+                  return out
+              }
+
               private fun collectTT(item: JSONObject): List<Media> {
                   val ref = "https://www.tiktok.com/"
                   val out = ArrayList<Media>()
                   val imgs = item.optJSONObject("imagePost")?.optJSONArray("images")
                   if (imgs != null && imgs.length() > 0) {
+                      var live = 0
                       for (i in 0 until imgs.length()) {
-                          val u = imgs.optJSONObject(i)?.optJSONObject("imageURL")
-                              ?.optJSONArray("urlList")?.optString(0) ?: ""
-                          if (u.isNotEmpty()) out.add(Media(u, false, u, ref))
+                          val o = imgs.optJSONObject(i) ?: continue
+                          val u = o.optJSONObject("imageURL")?.optJSONArray("urlList")?.optString(0) ?: ""
+                          val mv = findMotion(o)
+                          if (mv.isNotEmpty()) { out.add(Media(mv, true, u, ref, true)); live++ }
+                          else if (u.isNotEmpty()) out.add(Media(u, false, u, ref))
+                      }
+                      if (live == 0) {
+                          diag = "info foto TikTok: " + keysOf(imgs.optJSONObject(0), "", 0).take(20).joinToString(",")
                       }
                       return out
                   }
@@ -332,6 +547,63 @@ jobs:
                   return out
               }
 
+              // ----- Threads -----
+              private fun parseTh(docs: List<String>, code: String): List<Media> {
+                  for (d in docs) {
+                      for (r in jsonRoots(d)) {
+                          val p = findPost(r, code) ?: continue
+                          val res = collectTh(p)
+                          if (res.isNotEmpty()) return res
+                      }
+                  }
+                  return emptyList()
+              }
+
+              private fun findPost(n: Any?, code: String): JSONObject? {
+                  if (n is JSONObject) {
+                      if ((code.isEmpty() || n.optString("code") == code) &&
+                          (n.has("image_versions2") || n.has("video_versions") || n.has("carousel_media"))) return n
+                      for (k in n.keys()) findPost(n.opt(k), code)?.let { return it }
+                  } else if (n is JSONArray) {
+                      for (i in 0 until n.length()) findPost(n.opt(i), code)?.let { return it }
+                  }
+                  return null
+              }
+
+              private fun collectTh(p: JSONObject): List<Media> {
+                  val out = ArrayList<Media>()
+                  val car = p.optJSONArray("carousel_media")
+                  if (car != null && car.length() > 0) {
+                      for (i in 0 until car.length()) oneTh(car.optJSONObject(i))?.let { out.add(it) }
+                  } else {
+                      oneTh(p)?.let { out.add(it) }
+                  }
+                  return out
+              }
+
+              private fun oneTh(o: JSONObject?): Media? {
+                  if (o == null) return null
+                  val thumb = best(o.optJSONObject("image_versions2")?.optJSONArray("candidates")) ?: ""
+                  val vid = best(o.optJSONArray("video_versions"))
+                  return if (vid != null) Media(vid, true, thumb)
+                  else if (thumb.isNotEmpty()) Media(thumb, false, thumb)
+                  else null
+              }
+
+              private fun best(a: JSONArray?): String? {
+                  if (a == null) return null
+                  var url: String? = null
+                  var area = -1L
+                  for (i in 0 until a.length()) {
+                      val o = a.optJSONObject(i) ?: continue
+                      val u = o.optString("url")
+                      if (u.isEmpty()) continue
+                      val s = o.optLong("width") * o.optLong("height")
+                      if (s > area) { area = s; url = u }
+                  }
+                  return url
+              }
+
               // ---------- Tampilan ----------
               private fun setSel(i: Int, v: Boolean) {
                   chosen[i] = v
@@ -340,24 +612,18 @@ jobs:
 
               private fun syncAll() {
                   bulk = true
-                  allBox?.isChecked = chosen.isNotEmpty() && chosen.all { it }
+                  allBox.isChecked = chosen.isNotEmpty() && chosen.all { it }
                   bulk = false
               }
 
               private fun show(found: List<Media>) {
+                  busy(false)
                   items.clear(); overlays.clear(); list.removeAllViews()
                   items.addAll(found)
                   chosen = BooleanArray(found.size)
+                  bulk = true; allBox.isChecked = false; bulk = false
+                  allBox.visibility = if (found.size > 1) View.VISIBLE else View.GONE
                   val nv = found.count { it.video }
-                  say("Ketemu $nv video dan ${found.size - nv} foto. Sentuh gambar untuk memilih.")
-                  val all = CheckBox(this).apply {
-                      text = "Pilih semua"
-                      setOnCheckedChangeListener { _, c ->
-                          if (!bulk) for (i in chosen.indices) setSel(i, c)
-                      }
-                  }
-                  allBox = all
-                  list.addView(all)
                   val gap = dp(4)
                   val cw = (resources.displayMetrics.widthPixels - dp(32) - gap * 6) / 3
                   val ch = cw * 16 / 9
@@ -376,7 +642,7 @@ jobs:
                       cell.addView(ov, FrameLayout.LayoutParams(-1, -1))
                       if (m.video) {
                           cell.addView(TextView(this).apply {
-                              text = "▶ Video"
+                              text = if (m.live) "▶ Live" else "▶ Video"
                               textSize = 11f
                               setTextColor(Color.WHITE)
                               setBackgroundColor(Color.argb(150, 0, 0, 0))
@@ -394,6 +660,13 @@ jobs:
                   }
                   list.addView(grid)
                   btn.isEnabled = true
+                  if (found.size == 1) {
+                      setSel(0, true)
+                      download()
+                  } else {
+                      say("Ketemu $nv video dan ${found.size - nv} foto. Sentuh gambar untuk memilih." +
+                          if (diag.isNotEmpty()) "\n($diag)" else "")
+                  }
               }
 
               private fun loadThumb(m: Media, v: ImageView) {
@@ -412,12 +685,14 @@ jobs:
                   val sel = items.filterIndexed { i, _ -> chosen[i] }
                   if (sel.isEmpty()) { say("Sentuh dulu minimal satu gambar."); return }
                   btn.isEnabled = false
+                  busy(true)
                   Thread {
                       var ok = 0
                       sel.forEachIndexed { n, m ->
                           say("Mengunduh ${n + 1} dari ${sel.size}... (jangan tutup aplikasi)")
                           try { save(m, n); ok++ } catch (e: Exception) { }
                       }
+                      busy(false)
                       say("Selesai: $ok dari ${sel.size} tersimpan di galeri (album EasyDownloader).")
                       runOnUiThread { btn.isEnabled = true }
                   }.start()
