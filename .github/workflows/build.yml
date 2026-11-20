@@ -52,8 +52,8 @@ jobs:
               applicationId 'com.pribadi.easydl'
               minSdk 29
               targetSdk 34
-              versionCode 5
-              versionName '4.1'
+              versionCode 6
+              versionName '4.2'
             }
             compileOptions {
               sourceCompatibility JavaVersion.VERSION_17
@@ -97,10 +97,8 @@ jobs:
           import android.content.Intent
           import android.graphics.Bitmap
           import android.graphics.BitmapFactory
-          import android.graphics.Canvas
           import android.graphics.Color
-          import android.graphics.Paint
-          import android.graphics.PorterDuff
+          import android.graphics.drawable.GradientDrawable
           import android.media.MediaCodec
           import android.media.MediaExtractor
           import android.media.MediaFormat
@@ -114,7 +112,7 @@ jobs:
           import android.util.Base64
           import android.view.Gravity
           import android.view.View
-          import android.view.animation.LinearInterpolator
+          import android.view.animation.DecelerateInterpolator
           import android.webkit.CookieManager
           import android.webkit.JavascriptInterface
           import android.webkit.WebResourceRequest
@@ -163,8 +161,7 @@ jobs:
               private lateinit var allBox: CheckBox
               private lateinit var loader: FrameLayout
               private lateinit var loaderText: TextView
-              private lateinit var cat: ImageView
-              private lateinit var mouse: ImageView
+              private lateinit var barFill: View
               private lateinit var loginHost: LinearLayout
               private lateinit var loginBox: FrameLayout
               private lateinit var loginTitle: TextView
@@ -194,6 +191,11 @@ jobs:
               private var thEmbedTried = false
               private var thLoginDone = false
               private var loginSite = ""
+              private var fbLast = 0
+              private var fbStall = 0
+              private var ttApiTried = false
+              @Volatile private var ttClips: Map<Int, String>? = null
+              private var ttNote = ""
               private val netVideos = ArrayList<String>()
 
               private val UA = "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36"
@@ -249,21 +251,6 @@ jobs:
                   return sb.reverse().toString()
               }
 
-              // black silhouette of an emoji, used for the loading animation
-              private fun silhouette(emoji: String, sizeDp: Int): ImageView {
-                  val px = dp(sizeDp)
-                  val bmp = Bitmap.createBitmap(px, px, Bitmap.Config.ARGB_8888)
-                  val p = Paint(Paint.ANTI_ALIAS_FLAG)
-                  p.textSize = px * 0.78f
-                  p.textAlign = Paint.Align.CENTER
-                  val fm = p.fontMetrics
-                  Canvas(bmp).drawText(emoji, px / 2f, px / 2f - (fm.ascent + fm.descent) / 2f, p)
-                  return ImageView(this).apply {
-                      setImageBitmap(bmp)
-                      setColorFilter(Color.BLACK, PorterDuff.Mode.SRC_IN)
-                  }
-              }
-
               override fun onCreate(savedInstanceState: Bundle?) {
                   super.onCreate(savedInstanceState)
                   input = EditText(this).apply { hint = "Paste a link, or share it to this app"; setSingleLine() }
@@ -297,20 +284,28 @@ jobs:
                       addView(host, LinearLayout.LayoutParams(1, 1))
                   }
 
-                  // loading animation: black cat chasing a black mouse, centered on screen
-                  mouse = silhouette("🐁", 70)
-                  cat = silhouette("🐈", 110)
+                  // loading bar: a long box with a green fill that grows while we wait
+                  val barW = (resources.displayMetrics.widthPixels * 0.7f).toInt()
+                  val track = GradientDrawable().apply { setColor(Color.WHITE); setStroke(dp(2), Color.BLACK); cornerRadius = dp(10).toFloat() }
+                  val fillShape = GradientDrawable().apply { setColor(Color.rgb(46, 160, 67)); cornerRadius = dp(7).toFloat() }
+                  barFill = View(this).apply {
+                      background = fillShape
+                      pivotX = 0f
+                      scaleX = 0f
+                  }
+                  val bar = FrameLayout(this).apply {
+                      background = track
+                      addView(barFill, FrameLayout.LayoutParams(-1, -1).apply { setMargins(dp(3), dp(3), dp(3), dp(3)) })
+                  }
                   loaderText = TextView(this).apply {
                       gravity = Gravity.CENTER
                       setTextColor(Color.DKGRAY)
-                      setPadding(dp(24), dp(12), dp(24), 0)
+                      setPadding(dp(24), dp(14), dp(24), 0)
                   }
-                  val row = FrameLayout(this)
-                  row.addView(mouse, FrameLayout.LayoutParams(dp(70), dp(70), Gravity.START or Gravity.BOTTOM))
-                  row.addView(cat, FrameLayout.LayoutParams(dp(110), dp(110), Gravity.START or Gravity.BOTTOM))
                   val box = LinearLayout(this).apply {
                       orientation = LinearLayout.VERTICAL
-                      addView(row, LinearLayout.LayoutParams(-1, dp(140)))
+                      gravity = Gravity.CENTER_HORIZONTAL
+                      addView(bar, LinearLayout.LayoutParams(barW, dp(22)))
                       addView(loaderText, LinearLayout.LayoutParams(-1, -2))
                   }
                   loader = FrameLayout(this).apply {
@@ -403,29 +398,23 @@ jobs:
                   anim?.cancel()
                   anim = null
                   if (!on) {
+                      barFill.scaleX = 1f
                       loader.visibility = View.GONE
                       return@runOnUiThread
                   }
                   loader.visibility = View.VISIBLE
                   loaderText.text = status.text
-                  val w = resources.displayMetrics.widthPixels.toFloat()
-                  val mw = dp(70)
-                  val cw = dp(110)
-                  val gap = dp(28)
-                  val unit = (mw + gap + cw).toFloat()
-                  anim = ValueAnimator.ofFloat(0f, 1f).apply {
-                      duration = 3200
-                      repeatCount = ValueAnimator.INFINITE
-                      interpolator = LinearInterpolator()
-                      addUpdateListener {
-                          val p = it.animatedValue as Float
-                          val x = w - p * (w + unit)
-                          mouse.translationX = x
-                          cat.translationX = x + mw + gap
-                          val t = p * 60.0
-                          mouse.translationY = -Math.abs(Math.sin(t)).toFloat() * dp(10)
-                          cat.translationY = -Math.abs(Math.sin(t + 1.0)).toFloat() * dp(14)
-                      }
+                  barFill.scaleX = 0f
+                  val ms = when (plat) {
+                      "x" -> 6000L
+                      "yt" -> 8000L
+                      "tt", "th", "ig" -> 16000L
+                      else -> 22000L
+                  }
+                  anim = ValueAnimator.ofFloat(0f, 0.93f).apply {
+                      duration = ms
+                      interpolator = DecelerateInterpolator()
+                      addUpdateListener { barFill.scaleX = it.animatedValue as Float }
                       start()
                   }
               }
@@ -528,6 +517,11 @@ jobs:
                   pollStop = false
                   thRetried = false
                   thEmbedTried = false
+                  fbLast = 0
+                  fbStall = 0
+                  ttApiTried = false
+                  ttClips = null
+                  ttNote = ""
                   synchronized(netVideos) { netVideos.clear() }
                   synchronized(captured) { captured.clear(); seen.clear() }
                   plat = platformOf(link)
@@ -719,8 +713,22 @@ jobs:
                           if (id.isNotEmpty()) found = parseTT(docs, id)
                           if (found.isEmpty() && tick >= 10) found = parseTT(docs, "")
                           if (found.isNotEmpty() && found.none { it.video }) {
-                              // photo post: wait a few seconds so live photo clips can show up in the page traffic
-                              found = if (tick < 7) emptyList() else withNet(found)
+                              // photo post: ask the TikTok app API for live photo clips and watch the page traffic
+                              if (!ttApiTried && id.isNotEmpty()) {
+                                  ttApiTried = true
+                                  Thread {
+                                      try {
+                                          val r = ttApi(id)
+                                          ttNote = "app API clips=${r.size}"
+                                          ttClips = r
+                                      } catch (e: Exception) {
+                                          ttNote = "app API: ${(e.message ?: e.javaClass.simpleName).take(40)}"
+                                          ttClips = emptyMap()
+                                      }
+                                  }.start()
+                              }
+                              found = if (tick < 6 || (ttClips == null && tick < 12)) emptyList() else withClips(withNet(found))
+                              if (found.isNotEmpty() && ttNote.isNotEmpty()) diag = (diag + " | " + ttNote).trim(' ', '|')
                           }
                       }
                       "th", "ig" -> {
@@ -733,10 +741,15 @@ jobs:
                       }
                       "fb" -> if (tick >= 2) {
                           found = parseFb(docs, tick >= 18)
-                          if (found.isNotEmpty() && !found[0].video && fbTotal > found.size && tick < 45) {
-                              say("Loading Facebook photos… (${found.size} of $fbTotal)")
-                              fbNudge(w)
-                              found = emptyList()
+                          if (found.isNotEmpty() && !found[0].video && fbTotal > found.size && tick < 40) {
+                              if (found.size > fbLast) { fbLast = found.size; fbStall = 0 } else fbStall++
+                              if (fbStall < 8) {
+                                  say("Loading Facebook photos… (${found.size} of $fbTotal)")
+                                  fbNudge(w)
+                                  found = emptyList()
+                              } else {
+                                  diag = "Facebook only provided ${found.size} of $fbTotal photos"
+                              }
                           }
                       }
                   }
@@ -770,11 +783,11 @@ jobs:
                       if (plat == "ig" && !hasCookie("https://www.instagram.com", "sessionid=")) { showLogin("Instagram", lastLink); return }
                       if (plat == "fb" && !hasCookie("https://www.facebook.com", "c_user=")) { showLogin("Facebook", lastLink); return }
                   }
-                  if (tick >= (if (plat == "fb" && fbTotal > 0) 46 else 25)) {
+                  if (tick >= (if (plat == "fb" && fbTotal > 0) 30 else 25)) {
                       if (plat == "th" && !thLoginDone && !hasCookie("https://www.threads.com", "sessionid=")) { showLogin("Threads", lastLink); return }
                       if (plat == "ig" && !hasCookie("https://www.instagram.com", "sessionid=")) { showLogin("Instagram", lastLink); return }
                       if (plat == "fb" && !hasCookie("https://www.facebook.com", "c_user=")) { showLogin("Facebook", lastLink); return }
-                      fail(my, "Nothing found. url=$url; data=${docs.size}")
+                      fail(my, "Nothing found. url=$url; data=${docs.size}; ${kinds(docs)}")
                       return
                   }
                   handler.postDelayed({ poll(my, tick + 1) }, 1000)
@@ -797,6 +810,46 @@ jobs:
                       else if (l.contains(".jpg") || l.contains(".webp") || l.contains(".heic")) out.putIfAbsent(name, Media(u, false, u, "https://www.threads.com/"))
                   }
                   return out.values.take(20).toList()
+              }
+
+              private fun kinds(docs: List<String>): String =
+                  listOf("image_versions2", "video_versions", "carousel_media", "itemStruct", "viewer_image")
+                      .joinToString(",") { k -> "$k=${docs.count { it.contains(k) }}" }
+
+              private fun rnd(n: Int): String {
+                  val r = java.util.Random()
+                  val sb = StringBuilder()
+                  for (i in 0 until n) sb.append(if (i == 0) 1 + r.nextInt(9) else r.nextInt(10))
+                  return sb.toString()
+              }
+
+              // live photo clips are only listed by the TikTok app API, not by the web page
+              private fun ttApi(id: String): Map<Int, String> {
+                  val q = "aweme_id=$id&iid=${rnd(19)}&device_id=${rnd(19)}&ac=wifi&channel=googleplay&aid=1180&app_name=musical_ly" +
+                      "&version_code=350103&version_name=35.1.3&device_platform=android&os=android&ab_version=35.1.3&ssmix=a" +
+                      "&device_type=Pixel+7&device_brand=google&language=en&os_api=33&os_version=13&manifest_version_code=2023501030" +
+                      "&resolution=1080*2400&dpi=420&sys_region=US&carrier_region=US&app_language=en&timezone_name=America%2FNew_York" +
+                      "&timezone_offset=-18000&locale=en&region=US&build_number=35.1.3&ts=${System.currentTimeMillis() / 1000}"
+                  val ua = "com.zhiliaoapp.musically/2023501030 (Linux; U; Android 13; en_US; Pixel 7; Build/TD1A.220804.031; Cronet/58.0.2991.0)"
+                  val body = open("https://api22-normal-c-alisg.tiktokv.com/aweme/v1/feed/?$q", "", ua).inputStream.bufferedReader().readText()
+                  val item = JSONObject(body).optJSONArray("aweme_list")?.optJSONObject(0)
+                  val out = HashMap<Int, String>()
+                  if (item == null || item.optString("aweme_id") != id) return out
+                  val imgs = item.optJSONObject("image_post_info")?.optJSONArray("images") ?: return out
+                  for (i in 0 until imgs.length()) {
+                      val vs = videoUrls(imgs.optJSONObject(i), emptySet())
+                      if (vs.isNotEmpty()) out[i] = vs[0]
+                  }
+                  return out
+              }
+
+              private fun withClips(found: List<Media>): List<Media> {
+                  val m = ttClips
+                  if (m == null || m.isEmpty()) return found
+                  return found.mapIndexed { i, x ->
+                      val u = m[i]
+                      if (u != null && !x.video) Media(u, true, x.thumb, "https://www.tiktok.com/", live = true) else x
+                  }
               }
 
               private fun withNet(found: List<Media>): List<Media> {
@@ -968,13 +1021,13 @@ jobs:
               private fun oneTh(o: JSONObject?): Media? {
                   if (o == null) return null
                   val thumb = best(o.optJSONObject("image_versions2")?.optJSONArray("candidates")) ?: ""
-                  val vid = best(o.optJSONArray("video_versions"))
+                  val vid = best(o.optJSONArray("video_versions"), true)
                   return if (vid != null) Media(vid, true, thumb)
                   else if (thumb.isNotEmpty()) Media(thumb, false, thumb)
                   else null
               }
 
-              private fun best(a: JSONArray?): String? {
+              private fun best(a: JSONArray?, needSize: Boolean = false): String? {
                   if (a == null) return null
                   var url: String? = null
                   var area = -1L
@@ -983,6 +1036,7 @@ jobs:
                       val u = o.optString("url")
                       if (u.isEmpty()) continue
                       val s = o.optLong("width") * o.optLong("height")
+                      if (needSize && s <= 0L) continue
                       if (s > area) { area = s; url = u }
                   }
                   return url
@@ -1482,7 +1536,11 @@ jobs:
                   try {
                       contentResolver.openOutputStream(item.first)!!.use { o ->
                           if (m.ua.isNotEmpty()) fetchChunks(url, o, m.ua, m.size, "Video")
-                          else open(url, m.ref).inputStream.use { it.copyTo(o) }
+                          else {
+                              val c = open(url, m.ref)
+                              if (m.video && (c.contentType ?: "").startsWith("audio")) throw IOException("This file is audio only, not a video")
+                              c.inputStream.use { it.copyTo(o) }
+                          }
                       }
                   } catch (e: Exception) {
                       contentResolver.delete(item.first, null, null)
@@ -1509,7 +1567,7 @@ jobs:
                   writeBytes(readAll(pickBest(m), m.ref), "easydl_live_${System.currentTimeMillis()}_$n.mp4", "video/mp4", true)
               }
 
-              // download in 9 MB pieces (YouTube slows down or blocks one huge request)
+              // download in pieces (YouTube slows down or blocks one huge request); every piece is retried in other ways
               private fun fetchChunks(url: String, out: OutputStream, ua: String, size: Long, label: String) {
                   val buf = ByteArray(65536)
                   if (size <= 0) {
@@ -1523,23 +1581,40 @@ jobs:
                   var pos = 0L
                   var lastPct = -1
                   while (pos < size) {
-                      val end = minOf(pos + 9437184L, size) - 1
-                      val c = open(url, "", ua)
-                      c.setRequestProperty("Range", "bytes=$pos-$end")
-                      if (c.responseCode == 200 && pos > 0) throw IOException("Server ignored the range request")
-                      var got = 0L
-                      c.inputStream.use { i ->
-                          var r = i.read(buf)
-                          while (r >= 0) {
-                              out.write(buf, 0, r)
-                              got += r
-                              pos += r
-                              val pct = (pos * 100 / size).toInt()
-                              if (pct != lastPct) { lastPct = pct; say("$label $pct%") }
-                              r = i.read(buf)
+                      var ok = false
+                      var why = ""
+                      for (variant in 0..3) {
+                          val len = if (variant >= 2) 1048576L else 9437184L
+                          val endv = minOf(pos + len, size) - 1
+                          val useParam = variant == 1 || variant == 3
+                          val u = if (useParam) "$url&range=$pos-$endv" else url
+                          try {
+                              val c = open(u, "https://www.youtube.com/", ua)
+                              c.setRequestProperty("Origin", "https://www.youtube.com")
+                              if (!useParam) c.setRequestProperty("Range", "bytes=$pos-$endv")
+                              val code = c.responseCode
+                              if (code >= 400) { why = "HTTP $code"; c.disconnect(); continue }
+                              if (!useParam && code == 200 && pos > 0) { why = "range ignored"; c.disconnect(); continue }
+                              var got = 0L
+                              c.inputStream.use { i ->
+                                  var r = i.read(buf)
+                                  while (r >= 0) {
+                                      out.write(buf, 0, r)
+                                      got += r
+                                      pos += r
+                                      val pct = (pos * 100 / size).toInt()
+                                      if (pct != lastPct) { lastPct = pct; say("$label $pct%") }
+                                      r = i.read(buf)
+                                  }
+                              }
+                              if (got == 0L) { why = "empty"; continue }
+                              ok = true
+                              break
+                          } catch (e: IOException) {
+                              why = "network error"
                           }
                       }
-                      if (got == 0L) throw IOException("Empty response")
+                      if (!ok) throw IOException("YouTube stopped the download at ${maxOf(lastPct, 0)}% ($why)")
                   }
               }
 
