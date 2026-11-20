@@ -52,8 +52,8 @@ jobs:
               applicationId 'com.pribadi.easydl'
               minSdk 29
               targetSdk 34
-              versionCode 7
-              versionName '4.3'
+              versionCode 8
+              versionName '4.4'
             }
             compileOptions {
               sourceCompatibility JavaVersion.VERSION_17
@@ -255,9 +255,10 @@ jobs:
               private val UA = "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36"
               private val UAD = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
               private val LINK = Regex("https?://(?:[\\w-]+\\.)*(?:tiktok\\.com|x\\.com|twitter\\.com|threads\\.net|threads\\.com|facebook\\.com|fb\\.watch|fb\\.com|instagram\\.com|youtube\\.com|youtu\\.be)/\\S*")
-              private class YC(val name: String, val id: String, val ver: String, val ua: String, val android: Boolean = false, val embed: Boolean = false)
+              private class YC(val name: String, val id: String, val ver: String, val ua: String, val android: Boolean = false, val embed: Boolean = false, val vision: Boolean = false)
 
               private val YT = listOf(
+                  YC("VISIONOS", "101", "1.02", "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15", vision = true),
                   YC("ANDROID_VR", "28", "1.65.10", "com.google.android.apps.youtube.vr.oculus/1.65.10 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip", android = true),
                   YC("ANDROID_VR", "28", "1.62.27", "com.google.android.apps.youtube.vr.oculus/1.62.27 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip", android = true),
                   YC("TVHTML5_SIMPLY_EMBEDDED_PLAYER", "85", "2.0", "Mozilla/5.0 (PlayStation; PlayStation 4/12.00) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.4 Safari/605.1.15", embed = true),
@@ -518,7 +519,7 @@ jobs:
                           if (plat == "tt") {
                               val u = request.url.toString()
                               val l = u.lowercase()
-                              if (l.contains("mime_type=video") || l.contains("/video/tos")) {
+                              if (!l.contains("audio") && (l.contains("mime_type=video") || l.contains("/video/tos"))) {
                                   synchronized(netVideos) {
                                       if (netVideos.size < 30 && netVideos.none { it.substringBefore("?") == u.substringBefore("?") }) netVideos.add(u)
                                   }
@@ -728,8 +729,8 @@ jobs:
                   val url = m.optString("url")
                   if (url.isEmpty()) return
                   if (m.optString("type") == "photo") {
-                      val sep = if (url.contains("?")) "&" else "?"
-                      out.add(Media("$url${sep}name=orig", false, "$url${sep}name=small"))
+                      val base = url.substringBefore("?")
+                      out.add(Media("$base?name=orig", false, "$base?name=small"))
                   } else {
                       out.add(Media(url, true, m.optString("thumbnail_url")))
                   }
@@ -767,6 +768,10 @@ jobs:
                           if (found.isNotEmpty() && found.none { it.video }) {
                               // photo post: watch the page traffic for a few seconds in case live photo clips load
                               found = if (tick < 5) emptyList() else withNet(found)
+                          }
+                          if (found.isNotEmpty() && found.any { it.live } && !vetting) {
+                              vetThen(my, found)
+                              return
                           }
                       }
                       "th", "ig" -> {
@@ -923,7 +928,7 @@ jobs:
                       for (i in 0 until n.length()) videoUrls(n.opt(i), skip, out)
                   } else if (n is String && n.startsWith("http")) {
                       val l = n.lowercase()
-                      if (l.contains("mime_type=video") || l.contains("/video/tos") || Regex("\\.mp4(\\?|$)").containsMatchIn(l)) out.add(n)
+                      if (!l.contains("audio") && (l.contains("mime_type=video") || l.contains("/video/tos") || Regex("\\.mp4(\\?|$)").containsMatchIn(l))) out.add(n)
                   }
                   return out.toList()
               }
@@ -1087,7 +1092,7 @@ jobs:
                               val k = try { sniff(u, m.ref) } catch (e: Exception) { "other" }
                               if (k != "audio") { pick = u; break }
                           }
-                          if (pick != null) good.add(Media(pick, true, m.thumb, m.ref))
+                          if (pick != null) good.add(Media(pick, true, m.thumb, m.ref, live = m.live, still = m.still))
                       }
                       runOnUiThread {
                           if (my == gen) {
@@ -1287,6 +1292,8 @@ jobs:
                       .put("userAgent", c.ua)
                   if (c.android) client.put("deviceMake", "Oculus").put("deviceModel", "Quest 3")
                       .put("androidSdkVersion", 32).put("osName", "Android").put("osVersion", "12L")
+                  if (c.vision) client.put("deviceMake", "Apple").put("deviceModel", "RealityDevice17,1")
+                      .put("osName", "visionOS").put("osVersion", "26.5.23O471")
                   if (visitor.isNotEmpty()) client.put("visitorData", visitor)
                   val ctx = JSONObject().put("client", client)
                   if (c.embed) ctx.put("thirdParty", JSONObject().put("embedUrl", "https://www.youtube.com/watch?v=$id"))
@@ -1673,7 +1680,9 @@ jobs:
 
               // live photo = short video clip (TikTok itself saves it as a normal MP4)
               private fun saveLive(m: Media, n: Int) {
-                  writeBytes(readAll(pickBest(m), m.ref), "easydl_live_${System.currentTimeMillis()}_$n.mp4", "video/mp4", true)
+                  val b = readAll(pickBest(m), m.ref)
+                  if (kindOf(b, minOf(16, b.size)) == "audio") throw IOException("This clip is sound only, not a video")
+                  writeBytes(b, "easydl_live_${System.currentTimeMillis()}_$n.mp4", "video/mp4", true)
               }
 
               private class Cur(var pos: Long = 0L, var pct: Int = -1)
