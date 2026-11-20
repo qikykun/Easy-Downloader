@@ -52,8 +52,8 @@ jobs:
               applicationId 'com.pribadi.easydl'
               minSdk 29
               targetSdk 34
-              versionCode 13
-              versionName '4.9'
+              versionCode 14
+              versionName '5.0'
             }
             compileOptions {
               sourceCompatibility JavaVersion.VERSION_17
@@ -66,6 +66,12 @@ jobs:
           <?xml version="1.0" encoding="utf-8"?>
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
             <uses-permission android:name="android.permission.INTERNET"/>
+            <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+            <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>
+            <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+            <uses-permission android:name="android.permission.READ_MEDIA_IMAGES"/>
+            <uses-permission android:name="android.permission.READ_MEDIA_VIDEO"/>
+            <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32"/>
             <application
               android:label="Easy Downloader"
               android:icon="@mipmap/ic_launcher"
@@ -75,7 +81,8 @@ jobs:
               <activity
                 android:name=".MainActivity"
                 android:exported="true"
-                android:launchMode="singleTop">
+                android:launchMode="singleTop"
+                android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|smallestScreenSize">
                 <intent-filter>
                   <action android:name="android.intent.action.MAIN"/>
                   <category android:name="android.intent.category.LAUNCHER"/>
@@ -86,6 +93,10 @@ jobs:
                   <data android:mimeType="text/plain"/>
                 </intent-filter>
               </activity>
+              <service
+                android:name=".DlService"
+                android:exported="false"
+                android:foregroundServiceType="dataSync"/>
             </application>
           </manifest>
           EOF
@@ -209,6 +220,39 @@ jobs:
 
           class Fmt(val url: String, val h: Int, val mime: String, val codecs: String, val br: Long, val size: Long, val fps: Int, val itag: Int = 0, val lang: Int = 0)
 
+          // keeps downloads running while you use other apps (shows a notification)
+          class DlService : android.app.Service() {
+              companion object {
+                  const val CH = "dl"
+                  const val ID = 7
+                  const val DONE = 8
+                  fun note(c: android.content.Context, text: String, ongoing: Boolean): android.app.Notification {
+                      val nm = c.getSystemService(android.content.Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+                      nm.createNotificationChannel(android.app.NotificationChannel(CH, "Downloads", android.app.NotificationManager.IMPORTANCE_LOW))
+                      val open = Intent(c, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                      val pi = android.app.PendingIntent.getActivity(c, 0, open, android.app.PendingIntent.FLAG_IMMUTABLE)
+                      return android.app.Notification.Builder(c, CH)
+                          .setSmallIcon(if (ongoing) android.R.drawable.stat_sys_download else android.R.drawable.stat_sys_download_done)
+                          .setContentTitle("Easy Downloader")
+                          .setContentText(text)
+                          .setOngoing(ongoing)
+                          .setAutoCancel(!ongoing)
+                          .setOnlyAlertOnce(true)
+                          .setContentIntent(pi)
+                          .build()
+                  }
+              }
+
+              override fun onBind(i: Intent?): android.os.IBinder? = null
+
+              override fun onStartCommand(i: Intent?, flags: Int, id: Int): Int {
+                  startForeground(ID, note(this, "Downloading…", true), android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+                  return START_NOT_STICKY
+              }
+          }
+
+          class FileItem(val uri: Uri, val video: Boolean)
+
           class AuthFail(code: Int) : IOException("Instagram refused the request (HTTP $code)")
 
           class MainActivity : Activity() {
@@ -227,6 +271,32 @@ jobs:
               private lateinit var webHost: LinearLayout
               private lateinit var webBox: FrameLayout
               private lateinit var webStatus: TextView
+              private lateinit var genBtn: Button
+              private lateinit var content: LinearLayout
+              private lateinit var filesPage: LinearLayout
+              private lateinit var filesGrid: GridLayout
+              private lateinit var filesInfo: TextView
+              private lateinit var tabDl: TextView
+              private lateinit var tabFiles: TextView
+              private lateinit var viewer: FrameLayout
+              private lateinit var fullBox: FrameLayout
+              private var fullCb: android.webkit.WebChromeClient.CustomViewCallback? = null
+              private var page = 0
+              private var genPick: Media? = null
+              private var genSettled = false
+              private val active = java.util.concurrent.atomic.AtomicInteger(0)
+              private val dlGen = ThreadLocal<Int>()
+              @Volatile private var lastNote = 0L
+              private val thumbPool = java.util.concurrent.Executors.newFixedThreadPool(3)
+              private val swipe by lazy {
+                  android.view.GestureDetector(this, object : android.view.GestureDetector.SimpleOnGestureListener() {
+                      override fun onFling(e1: MotionEvent?, e2: MotionEvent, vx: Float, vy: Float): Boolean {
+                          if (Math.abs(vx) < 900 || Math.abs(vx) < Math.abs(vy) * 1.5f) return false
+                          showPage(if (vx < 0) 1 else 0)
+                          return true
+                      }
+                  })
+              }
               private var web: WebView? = null
               private var loginWeb: WebView? = null
               private var anim: ValueAnimator? = null
@@ -306,6 +376,9 @@ jobs:
                   "adservice", "pagead", "syndication.", "trafficstars", "tsyndicate", "ero-advertising", "adskeeper", "yllix", "clickaine", "adspyglass")
 
               // catches stream lists (m3u8) that players load in the background, even without a file name
+              private val LIBS = listOf("jsdelivr", "cdnjs", "unpkg", "googleapis", "gstatic", "jwplayer", "jwpcdn", "jwpsrv", "videojs", "zencdn",
+                  "plyr", "fluidplayer", "bootstrapcdn", "jquery", "hcaptcha", "recaptcha", "cloudflare", "cloudfront", "bunny", "b-cdn", "hls.js", "dplayer", "artplayer")
+
               private val GEN_HOOK = """(function(){if(window.__g)return;window.__g=1;
           var chk=function(u,t){try{if(t&&t.replace(/^\uFEFF/,'').trim().indexOf('#EXTM3U')==0)B.v(u,location.href)}catch(e){}};
           var f=window.fetch;
@@ -318,18 +391,20 @@ jobs:
 
               private val GEN_JS = """(function(){
           try{var all=document.querySelectorAll('body *');for(var z=0;z<all.length&&z<3000;z++){var el=all[z];var tx=(el.innerText||'').toLowerCase();
-          if(tx.length<300&&/(click allow|not a robot|press allow|e-captcha|allow notifications)/.test(tx)){var p=el;while(p&&p!=document.body){var cs=getComputedStyle(p);if(cs.position=='fixed'||cs.position=='absolute'){p.remove();break}p=p.parentElement}}}
+          if(tx.length<300&&/(click allow|not a robot|press allow|e-captcha|allow notifications|confirm to continue|please confirm|you are not a robot|tap allow)/.test(tx)){var p=el;while(p&&p!=document.body){var cs=getComputedStyle(p);if(cs.position=='fixed'||cs.position=='absolute'){p.remove();break}p=p.parentElement}}}
           var top=document.querySelectorAll('body > *');for(var y=0;y<top.length;y++){var c2=getComputedStyle(top[y]);if(c2.position=='fixed'&&parseInt(c2.zIndex||'0')>=10000&&!top[y].querySelector('video'))top[y].remove()}}catch(x){}
           var send=function(u){try{if(u&&u.indexOf('http')==0)B.v(u,location.href)}catch(e){}};
           var vs=document.querySelectorAll('video,source');
-          for(var i=0;i<vs.length;i++){var e=vs[i];send(e.currentSrc);send(e.src);try{if(e.tagName=='VIDEO'){e.muted=true;var p=e.play();if(p&&p.catch)p.catch(function(){})}}catch(x){}}
+          for(var i=0;i<vs.length;i++){var e=vs[i];send(e.currentSrc);send(e.src);try{if(e.tagName=='VIDEO'){if(!e.paused)window.__pl=1;if(!window.__pl&&!e.__ap){e.__ap=1;var p=e.play();if(p&&p.catch)p.catch(function(){e.muted=true;e.play()})}}}catch(x){}}
+          try{var fr=document.querySelectorAll('iframe');for(var w=0;w<fr.length;w++){var cf=getComputedStyle(fr[w]);if(cf.position=='fixed'||(parseInt(cf.zIndex||'0')>=1000&&!/(embed|player|video)/i.test(fr[w].src||'')))fr[w].remove()}}catch(x){}
           var h=document.documentElement.innerHTML.replace(/\\\//g,'/').replace(/\\u0026/g,'&').replace(/&amp;/g,'&');
           var m=h.match(/https?:\/\/[^"'\s\\<>()]+?\.(?:mp4|m3u8|webm|mkv)(?:\?[^"'\s\\<>()]*)?/g);
           if(m)for(var j=0;j<m.length&&j<40;j++)send(m[j]);
           var bt=document.querySelectorAll('button,a,div[role=button],input[type=button],input[type=submit],span');
-          for(var k=0;k<bt.length&&k<400;k++){var t=(bt[k].innerText||bt[k].value||'').trim().toLowerCase();if(t.length>0&&t.length<40&&/(turned it off|i('| a)?m human|not a robot|click to play|tap to play|watch now|play video|continue to video|download|unduh|get link|generate|proceed)/.test(t)&&!/(app|apk|install|extension|vpn|premium|register|sign|login|upgrade)/.test(t)){try{bt[k].click()}catch(x){}}}
-          var pl=document.querySelectorAll('.vjs-big-play-button,.jw-icon-display,.plyr__control--overlaid,.play-button,[class*=big-play],[aria-label=Play],[title=Play]');
-          for(var q=0;q<pl.length;q++){try{pl[q].click()}catch(x){}}
+          for(var k=0;k<bt.length&&k<400;k++){var t=(bt[k].innerText||bt[k].value||'').trim().toLowerCase();if(t.length>0&&t.length<40&&/(turned it off|i('| a)?m human|not a robot|click to play|tap to play|watch now|play video|continue to video|get link|generate|proceed|^ok$|^i agree$|^enter$|i am 18|i'm 18|18\+)/.test(t)&&!/(app|apk|install|extension|vpn|premium|register|sign|login|upgrade)/.test(t)){try{bt[k].click()}catch(x){}}}
+          if(!window.__pl&&!(window.__pc>6)){window.__pc=(window.__pc||0)+1;
+          var pl=document.querySelectorAll('.vjs-big-play-button,.jw-icon-display,.jw-display-icon-container,.plyr__control--overlaid,.play-button,.playbtn,.btn-play,[class*=big-play],[class*=play-btn],[class*=playbtn],[aria-label=Play],[aria-label=play],[title=Play]');
+          for(var q=0;q<pl.length;q++){try{pl[q].click()}catch(x){}}}
           })();"""
 
               inner class Bridge(private val g: Int) {
@@ -379,7 +454,7 @@ jobs:
                       }
                   })
                   status = TextView(this).apply {
-                      text = "Easy Downloader 4.9\nCopy a video link from any website (Threads, X, TikTok, Facebook, Instagram, YouTube or others), then open this app. You can also paste it in the box above."
+                      text = "Easy Downloader 5.0\nCopy a video link from any website (Threads, X, TikTok, Facebook, Instagram, YouTube or others), then open this app. You can also paste it in the box above.\nSwipe left to see your downloaded files."
                       setPadding(0, dp(8), 0, dp(8))
                   }
                   list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -399,9 +474,9 @@ jobs:
                       }
                   }
                   host = FrameLayout(this)
-                  val content = LinearLayout(this).apply {
+                  content = LinearLayout(this).apply {
                       orientation = LinearLayout.VERTICAL
-                      setPadding(dp(16), dp(40), dp(16), dp(16))
+                      setPadding(dp(16), dp(4), dp(16), dp(16))
                       addView(input)
                       addView(status)
                       addView(ScrollView(this@MainActivity).apply { addView(list) }, LinearLayout.LayoutParams(-1, 0, 1f))
@@ -467,8 +542,52 @@ jobs:
                       addView(loginBox, LinearLayout.LayoutParams(-1, 0, 1f))
                   }
 
+                  // second page (swipe left): everything downloaded so far
+                  filesInfo = TextView(this).apply { setPadding(0, dp(4), 0, dp(8)) }
+                  filesGrid = GridLayout(this).apply { columnCount = 3 }
+                  filesPage = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setPadding(dp(16), dp(4), dp(16), dp(16))
+                      setBackgroundColor(Color.rgb(250, 250, 250))
+                      addView(filesInfo)
+                      addView(ScrollView(this@MainActivity).apply { addView(filesGrid) }, LinearLayout.LayoutParams(-1, 0, 1f))
+                  }
+                  val pages = FrameLayout(this)
+                  pages.addView(content, FrameLayout.LayoutParams(-1, -1))
+                  pages.addView(filesPage, FrameLayout.LayoutParams(-1, -1))
+                  filesPage.translationX = resources.displayMetrics.widthPixels.toFloat()
+                  tabDl = TextView(this).apply {
+                      text = "Download"
+                      gravity = Gravity.CENTER
+                      setPadding(0, dp(12), 0, dp(12))
+                      setOnClickListener { showPage(0) }
+                  }
+                  tabFiles = TextView(this).apply {
+                      text = "My files"
+                      gravity = Gravity.CENTER
+                      setPadding(0, dp(12), 0, dp(12))
+                      setOnClickListener { showPage(1) }
+                  }
+                  val outer = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setPadding(0, dp(28), 0, 0)
+                      addView(LinearLayout(this@MainActivity).apply {
+                          addView(tabDl, LinearLayout.LayoutParams(0, -2, 1f))
+                          addView(tabFiles, LinearLayout.LayoutParams(0, -2, 1f))
+                      }, LinearLayout.LayoutParams(-1, -2))
+                      addView(pages, LinearLayout.LayoutParams(-1, 0, 1f))
+                  }
+                  viewer = FrameLayout(this).apply {
+                      visibility = View.GONE
+                      setBackgroundColor(Color.BLACK)
+                      isClickable = true
+                  }
+                  fullBox = FrameLayout(this).apply {
+                      visibility = View.GONE
+                      setBackgroundColor(Color.BLACK)
+                  }
                   val root = FrameLayout(this)
-                  root.addView(content, FrameLayout.LayoutParams(-1, -1))
+                  root.addView(outer, FrameLayout.LayoutParams(-1, -1))
                   root.addView(loader, FrameLayout.LayoutParams(-1, -1))
                   root.addView(loginHost, FrameLayout.LayoutParams(-1, -1))
 
@@ -479,6 +598,18 @@ jobs:
                       setBackgroundColor(Color.rgb(46, 160, 67))
                   }
                   webBox = FrameLayout(this)
+                  genBtn = Button(this).apply {
+                      text = "Waiting for the video…"
+                      isEnabled = false
+                      setOnClickListener {
+                          val m = genPick
+                          if (m != null) {
+                              runDownloads(listOf(m))
+                              text = "Downloading in the background ✓"
+                              isEnabled = false
+                          }
+                      }
+                  }
                   webHost = LinearLayout(this).apply {
                       orientation = LinearLayout.VERTICAL
                       visibility = View.GONE
@@ -497,8 +628,13 @@ jobs:
                       }, LinearLayout.LayoutParams(-1, -2))
                       addView(webBox, LinearLayout.LayoutParams(-1, 0, 1f))
                       addView(webStatus, LinearLayout.LayoutParams(-1, -2))
+                      addView(genBtn, LinearLayout.LayoutParams(-1, -2))
                   }
                   root.addView(webHost, FrameLayout.LayoutParams(-1, -1))
+                  root.addView(viewer, FrameLayout.LayoutParams(-1, -1))
+                  root.addView(fullBox, FrameLayout.LayoutParams(-1, -1))
+                  markTabs()
+                  askPermissions()
                   setContentView(root)
                   if (savedInstanceState == null) handleShare(intent)
               }
@@ -510,8 +646,11 @@ jobs:
               }
 
               override fun onBackPressed() {
-                  if (loginHost.visibility == View.VISIBLE) finishLogin(false)
+                  if (fullBox.visibility == View.VISIBLE) fullCb?.onCustomViewHidden()
+                  else if (viewer.visibility == View.VISIBLE) closeViewer()
+                  else if (loginHost.visibility == View.VISIBLE) finishLogin(false)
                   else if (webHost.visibility == View.VISIBLE) cancelWeb()
+                  else if (page == 1) showPage(0)
                   else super.onBackPressed()
               }
 
@@ -532,6 +671,7 @@ jobs:
                   if (!hasFocus || SystemClock.elapsedRealtime() < skipClipUntil) return
                   if (loginHost.visibility == View.VISIBLE) return
                   if (webHost.visibility == View.VISIBLE) return
+                  if (viewer.visibility == View.VISIBLE) return
                   val cm = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
                   val text = cm.primaryClip?.takeIf { it.itemCount > 0 }
                       ?.getItemAt(0)?.coerceToText(this)?.toString() ?: return
@@ -540,10 +680,160 @@ jobs:
                   start(link)
               }
 
-              private fun say(s: String) = runOnUiThread {
-                  status.text = s
-                  loaderText.text = s
-                  webStatus.text = s
+              private fun say(s: String) {
+                  val g = dlGen.get()
+                  if (g != null) note(s)
+                  if (g != null && g != gen && webHost.visibility != View.VISIBLE) return
+                  runOnUiThread {
+                      status.text = s
+                      loaderText.text = s
+                      webStatus.text = s
+                  }
+              }
+
+              private fun note(text: String) {
+                  val now = SystemClock.elapsedRealtime()
+                  if (now - lastNote < 800) return
+                  lastNote = now
+                  try {
+                      (getSystemService(NOTIFICATION_SERVICE) as android.app.NotificationManager).notify(DlService.ID, DlService.note(this, text, true))
+                  } catch (e: Exception) {
+                  }
+              }
+
+              override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+                  if (viewer.visibility != View.VISIBLE && webHost.visibility != View.VISIBLE && loginHost.visibility != View.VISIBLE &&
+                      fullBox.visibility != View.VISIBLE && loader.visibility != View.VISIBLE) swipe.onTouchEvent(ev)
+                  return super.dispatchTouchEvent(ev)
+              }
+
+              private fun markTabs() {
+                  tabDl.setTextColor(if (page == 0) Color.rgb(46, 160, 67) else Color.GRAY)
+                  tabFiles.setTextColor(if (page == 1) Color.rgb(46, 160, 67) else Color.GRAY)
+                  tabDl.setBackgroundColor(if (page == 0) Color.rgb(232, 245, 233) else Color.TRANSPARENT)
+                  tabFiles.setBackgroundColor(if (page == 1) Color.rgb(232, 245, 233) else Color.TRANSPARENT)
+              }
+
+              private fun showPage(p: Int) {
+                  if (p == page) return
+                  page = p
+                  val w = resources.displayMetrics.widthPixels.toFloat()
+                  content.animate().translationX(if (p == 1) -w else 0f).setDuration(220).start()
+                  filesPage.animate().translationX(if (p == 1) 0f else w).setDuration(220).start()
+                  markTabs()
+                  if (p == 1) refreshFiles()
+              }
+
+              private fun askPermissions() {
+                  val want = if (android.os.Build.VERSION.SDK_INT >= 33)
+                      arrayOf("android.permission.POST_NOTIFICATIONS", "android.permission.READ_MEDIA_IMAGES", "android.permission.READ_MEDIA_VIDEO")
+                  else arrayOf("android.permission.READ_EXTERNAL_STORAGE")
+                  val need = want.filter { checkSelfPermission(it) != android.content.pm.PackageManager.PERMISSION_GRANTED }
+                  if (need.isNotEmpty()) requestPermissions(need.toTypedArray(), 1)
+              }
+
+              override fun onRequestPermissionsResult(code: Int, perms: Array<out String>, res: IntArray) {
+                  super.onRequestPermissionsResult(code, perms, res)
+                  if (page == 1) refreshFiles()
+              }
+
+              // ---------- My files ----------
+              private fun queryFiles(): List<FileItem> {
+                  val out = ArrayList<Pair<Long, FileItem>>()
+                  for (pass in 0..1) {
+                      val col = if (pass == 0) MediaStore.Images.Media.EXTERNAL_CONTENT_URI else MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+                      val proj = arrayOf(android.provider.BaseColumns._ID, MediaStore.MediaColumns.DATE_ADDED)
+                      try {
+                          contentResolver.query(col, proj, MediaStore.MediaColumns.RELATIVE_PATH + " LIKE ?", arrayOf("%EasyDownloader%"), null)?.use { c ->
+                              while (c.moveToNext()) {
+                                  out.add(Pair(c.getLong(1), FileItem(android.content.ContentUris.withAppendedId(col, c.getLong(0)), pass == 1)))
+                              }
+                          }
+                      } catch (e: Exception) {
+                      }
+                  }
+                  return out.sortedByDescending { it.first }.map { it.second }
+              }
+
+              private fun refreshFiles() {
+                  Thread {
+                      val all = queryFiles()
+                      runOnUiThread {
+                          filesGrid.removeAllViews()
+                          filesInfo.text = if (all.isEmpty()) "Nothing downloaded yet. Swipe right to go back."
+                              else "${all.size} file(s) in album EasyDownloader. Tap to open."
+                          val gap = dp(4)
+                          val cw = (resources.displayMetrics.widthPixels - dp(32) - gap * 6) / 3
+                          val ch = cw * 4 / 3
+                          all.take(300).forEachIndexed { i, f ->
+                              val cell = FrameLayout(this)
+                              val img = ImageView(this).apply {
+                                  scaleType = ImageView.ScaleType.CENTER_CROP
+                                  setBackgroundColor(Color.LTGRAY)
+                              }
+                              cell.addView(img, FrameLayout.LayoutParams(-1, -1))
+                              if (f.video) cell.addView(TextView(this).apply {
+                                  text = "▶"
+                                  textSize = 12f
+                                  setTextColor(Color.WHITE)
+                                  setBackgroundColor(Color.argb(150, 0, 0, 0))
+                                  setPadding(dp(6), dp(2), dp(6), dp(2))
+                              }, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.START))
+                              cell.setOnClickListener { openViewer(f) }
+                              filesGrid.addView(cell, GridLayout.LayoutParams().apply {
+                                  width = cw
+                                  height = ch
+                                  setMargins(gap, gap, gap, gap)
+                              })
+                              thumbPool.execute {
+                                  try {
+                                      val b = contentResolver.loadThumbnail(f.uri, android.util.Size(cw, ch), null)
+                                      runOnUiThread { img.setImageBitmap(b) }
+                                  } catch (e: Exception) {
+                                  }
+                              }
+                          }
+                      }
+                  }.start()
+              }
+
+              private fun openViewer(f: FileItem) {
+                  viewer.removeAllViews()
+                  if (f.video) {
+                      val vv = android.widget.VideoView(this)
+                      val mc = android.widget.MediaController(this)
+                      mc.setAnchorView(vv)
+                      vv.setMediaController(mc)
+                      vv.setVideoURI(f.uri)
+                      vv.setOnPreparedListener { vv.start() }
+                      viewer.addView(vv, FrameLayout.LayoutParams(-1, -1, Gravity.CENTER))
+                  } else {
+                      val iv = ImageView(this).apply { scaleType = ImageView.ScaleType.FIT_CENTER }
+                      viewer.addView(iv, FrameLayout.LayoutParams(-1, -1))
+                      Thread {
+                          try {
+                              val o = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                              contentResolver.openInputStream(f.uri)?.use { BitmapFactory.decodeStream(it, null, o) }
+                              var ss = 1
+                              val maxSide = maxOf(resources.displayMetrics.widthPixels, resources.displayMetrics.heightPixels) * 2
+                              while (maxOf(o.outWidth, o.outHeight) / ss > maxSide) ss *= 2
+                              val o2 = BitmapFactory.Options().apply { inSampleSize = ss }
+                              val b = contentResolver.openInputStream(f.uri)?.use { BitmapFactory.decodeStream(it, null, o2) }
+                              runOnUiThread { iv.setImageBitmap(b) }
+                          } catch (e: Exception) {
+                          }
+                      }.start()
+                  }
+                  viewer.addView(Button(this).apply {
+                      text = "✕"
+                      setOnClickListener { closeViewer() }
+                  }, FrameLayout.LayoutParams(dp(56), dp(56), Gravity.TOP or Gravity.END).apply { setMargins(0, dp(32), dp(8), 0) })
+                  viewer.visibility = View.VISIBLE
+              }
+
+              private fun closeViewer() {
+                  viewer.visibility = View.GONE
+                  viewer.removeAllViews()
               }
 
               private fun closeWeb() {
@@ -639,6 +929,25 @@ jobs:
                       w.settings.setSupportMultipleWindows(false)
                       // like a download manager: catch the file when the site starts a download
                       w.setDownloadListener { url, _, _, _, _ -> addGen(url, genPage) }
+                      w.webChromeClient = object : android.webkit.WebChromeClient() {
+                          // pop-up messages from the page are never shown
+                          override fun onJsAlert(v: WebView, u: String?, m: String?, r: android.webkit.JsResult): Boolean { r.cancel(); return true }
+                          override fun onJsConfirm(v: WebView, u: String?, m: String?, r: android.webkit.JsResult): Boolean { r.cancel(); return true }
+                          override fun onJsPrompt(v: WebView, u: String?, m: String?, d: String?, r: android.webkit.JsPromptResult): Boolean { r.cancel(); return true }
+                          override fun onJsBeforeUnload(v: WebView, u: String?, m: String?, r: android.webkit.JsResult): Boolean { r.confirm(); return true }
+                          // full screen video
+                          override fun onShowCustomView(v: View, cb: android.webkit.WebChromeClient.CustomViewCallback) {
+                              fullBox.removeAllViews()
+                              fullBox.addView(v, FrameLayout.LayoutParams(-1, -1))
+                              fullBox.visibility = View.VISIBLE
+                              fullCb = cb
+                          }
+                          override fun onHideCustomView() {
+                              fullBox.removeAllViews()
+                              fullBox.visibility = View.GONE
+                              fullCb = null
+                          }
+                      }
                   }
                   CookieManager.getInstance().setAcceptCookie(true)
                   CookieManager.getInstance().setAcceptThirdPartyCookies(w, true)
@@ -648,7 +957,7 @@ jobs:
                           val u = request.url
                           if (plat == "gen" && (u.scheme == "http" || u.scheme == "https")) {
                               // ads open other websites: never leave the page we started on
-                              if (request.isForMainFrame && genBase.isNotEmpty() && baseOf(u.host ?: "") != genBase) {
+                              if (request.isForMainFrame && genSettled && baseOf(u.host ?: "") != genBase) {
                                   // do not open the other site, only check if it is the video file itself
                                   val s = u.toString()
                                   if (ADS.none { s.lowercase().contains(it) }) addGen(s, genPage)
@@ -674,6 +983,16 @@ jobs:
                                   return android.webkit.WebResourceResponse("text/plain", "utf-8", java.io.ByteArrayInputStream(ByteArray(0)))
                               }
                               val gp = gl.substringBefore("?").substringBefore("#")
+                              // scripts and frames from other websites are almost always ads
+                              val rh = baseOf(request.url.host ?: "")
+                              if (genBase.isNotEmpty() && rh != genBase && !request.isForMainFrame) {
+                                  val acc = request.requestHeaders?.get("Accept") ?: ""
+                                  val lib = LIBS.any { (request.url.host ?: "").lowercase().contains(it) }
+                                  if (gp.endsWith(".js") && !lib) return android.webkit.WebResourceResponse("text/javascript", "utf-8", java.io.ByteArrayInputStream(ByteArray(0)))
+                                  if (acc.contains("text/html") && !Regex("(embed|player|/e/|/v/|video|stream)").containsMatchIn(gp)) {
+                                      return android.webkit.WebResourceResponse("text/html", "utf-8", java.io.ByteArrayInputStream(ByteArray(0)))
+                                  }
+                              }
                               val static = Regex("\\.(js|css|png|jpe?g|gif|svg|webp|ico|woff2?|ttf|otf|html?|php|json|xml|ts|m4s|aac|m4a|vtt|srt|key)$").containsMatchIn(gp)
                               val hint = listOf("m3u8", "mpegurl", "playlist", "master", "manifest", "/hls", "video", "stream", "/media", "download", "/file").any { gp.contains(it) }
                               if (gp.endsWith(".mp4") || gp.endsWith(".m3u8") || gp.endsWith(".webm") || gp.endsWith(".mkv") || gp.endsWith(".mov") || gp.endsWith(".m4v") || gl.contains("mime=video") || (hint && !static)) {
@@ -699,12 +1018,16 @@ jobs:
                       }
 
                       override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
+                          if (plat == "gen" && !genSettled && url != null && url.startsWith("http")) genBase = baseOf(Uri.parse(url).host ?: "")
                           if (plat != "tt") view.evaluateJavascript(HOOK, null)
                           if (plat == "gen") view.evaluateJavascript(GEN_HOOK, null)
                       }
 
                       override fun onPageFinished(view: WebView, url: String?) {
-                          if (plat == "gen" && genBase.isEmpty() && url != null) genBase = baseOf(Uri.parse(url).host ?: "")
+                          if (plat == "gen" && !genSettled && url != null && url.startsWith("http")) {
+                              genBase = baseOf(Uri.parse(url).host ?: "")
+                              genSettled = true
+                          }
                           if (plat == "gen" && url != null && url.startsWith("http")) genPage = url
                           if (plat != "tt") view.evaluateJavascript(HOOK, null)
                       }
@@ -765,6 +1088,10 @@ jobs:
                   synchronized(genGood) { genGood.clear() }
                   genGoodAt = -1
                   genPage = link
+                  genPick = null
+                  genSettled = false
+                  genBtn.text = "Waiting for the video…"
+                  genBtn.isEnabled = false
                   synchronized(captured) { captured.clear(); seen.clear() }
                   plat = platformOf(link)
                   say("Loading…")
@@ -975,13 +1302,13 @@ jobs:
                               checkGen(my, fresh)
                           }
                           val good = synchronized(genGood) { ArrayList(genGood) }
-                          if (good.isNotEmpty()) {
-                              if (genGoodAt < 0) genGoodAt = tick
-                              if (tick >= genGoodAt + 3 && !genChecking) {
-                                  chooseGen(good)
-                                  return
-                              }
-                          } else if (tick % 5 == 0 && tick < 60) say("Looking for the video… If it does not start, tap play. (ads are blocked)")
+                          val pick = bestGen(good)
+                          if (pick != null && pick !== genPick && genBtn.text.toString() != "Downloading in the background ✓") {
+                              genPick = pick
+                              genBtn.text = "⬇ Download video" + (if (pick.hls) " (stream, best quality)" else if (pick.size > 0) " (${pick.size / 1048576} MB)" else "")
+                              genBtn.isEnabled = true
+                              say("Video found. Watch it here, or tap Download below. (ads are blocked)")
+                          } else if (pick == null && tick % 5 == 0 && tick < 60) say("Looking for the video… It starts by itself; if not, tap play. (ads are blocked)")
                       }
                       "th", "ig" -> {
                           val rx = if (plat == "th") "/(?:post|t)/([A-Za-z0-9_-]+)" else "/(?:p|reel|reels|tv)/([A-Za-z0-9_-]+)"
@@ -1041,11 +1368,8 @@ jobs:
                   }
                   if (tick >= (if (plat == "gen") 60 else if (plat == "fb" && fbTotal > 0) 30 else 25)) {
                       if (plat == "gen") {
-                          if (tick >= 600) {
-                              fail(my, "No video found on this page. If the site asks you to turn off VPN or WARP, turn it off and try again.")
-                              return
-                          }
-                          if (tick % 5 == 0) say("Tap play on the video. It downloads by itself once found. (ads are blocked)")
+                          if (tick >= 1800) return
+                          if (genPick == null && tick % 5 == 0) say("Tap play on the video. The Download button turns on once the video is found. (ads are blocked)")
                           handler.postDelayed({ poll(my, tick + 1) }, 1000)
                           return
                       }
@@ -1165,13 +1489,12 @@ jobs:
               }
 
               // the biggest real video file wins (= best quality); a stream list is used when there is no file
-              private fun chooseGen(good: List<Media>) {
+              private fun bestGen(good: List<Media>): Media? {
                   val files = good.filter { !it.hls }
                   val lists = good.filter { it.hls }
                   val f = files.maxByOrNull { it.size }
                   val l = lists.maxByOrNull { it.size }
-                  val pick = if (f != null && (l == null || f.size >= 20L * 1048576)) f else l ?: f
-                  if (pick != null) show(listOf(pick))
+                  return if (f != null && (l == null || f.size >= 20L * 1048576)) f else l ?: f
               }
 
               // last resort for Threads: read the public embed page without JavaScript
@@ -1913,23 +2236,47 @@ jobs:
                       return
                   }
                   btn.isEnabled = false
+                  runDownloads(sel)
+              }
+
+              // downloads keep going in the background; you can switch to other apps
+              private fun runDownloads(sel: List<Media>) {
                   val g = gen
+                  if (active.getAndIncrement() == 0) {
+                      try { startForegroundService(Intent(this, DlService::class.java)) } catch (e: Exception) { }
+                  }
                   Thread {
+                      dlGen.set(g)
                       var ok = 0
-                      sel.forEachIndexed { n, m ->
-                          if (g == gen) say("Downloading ${n + 1} of ${sel.size}… (keep the app open)")
-                          try {
-                              save(m, n)
-                              ok++
-                          } catch (e: Exception) {
-                              lastErr = e.message ?: e.javaClass.simpleName
+                      var err = ""
+                      try {
+                          sel.forEachIndexed { n, m ->
+                              say("Downloading ${n + 1} of ${sel.size}… (you can use other apps)")
+                              try {
+                                  save(m, n)
+                                  ok++
+                              } catch (e: Exception) {
+                                  err = e.message ?: e.javaClass.simpleName
+                              }
                           }
-                      }
-                      runOnUiThread {
-                          if (g == gen) {
-                              status.text = if (ok == sel.size) "Done: $ok of ${sel.size} saved to your gallery (album EasyDownloader)."
-                              else "Done: $ok of ${sel.size} saved. Error: $lastErr"
-                              btn.isEnabled = true
+                      } finally {
+                          val msg = if (ok == sel.size) "Done: $ok of ${sel.size} saved (album EasyDownloader)."
+                              else "Done: $ok of ${sel.size} saved. Error: $err"
+                          lastNote = 0L
+                          if (active.decrementAndGet() == 0) {
+                              try { stopService(Intent(this, DlService::class.java)) } catch (e: Exception) { }
+                              try { (getSystemService(NOTIFICATION_SERVICE) as android.app.NotificationManager).cancel(DlService.ID) } catch (e: Exception) { }
+                          }
+                          try {
+                              (getSystemService(NOTIFICATION_SERVICE) as android.app.NotificationManager).notify(DlService.DONE + g % 1000, DlService.note(this, msg, false))
+                          } catch (e: Exception) { }
+                          runOnUiThread {
+                              if (g == gen) {
+                                  status.text = msg
+                                  btn.isEnabled = true
+                                  if (webHost.visibility == View.VISIBLE) webStatus.text = msg
+                              }
+                              if (page == 1) refreshFiles()
                           }
                       }
                   }.start()
@@ -1974,8 +2321,83 @@ jobs:
                   contentResolver.update(p.first, p.second, null, null)
               }
 
+              private class Fatal(msg: String) : IOException(msg)
+
+              // keeps downloading from where it stopped when the connection drops
+              private fun fetchResume(url: String, ref: String, ua: String, out: OutputStream): Long {
+                  val buf = ByteArray(65536)
+                  var pos = 0L
+                  var total = -1L
+                  var tries = 0
+                  var pct = -1
+                  while (true) {
+                      val c = open(url, ref, ua)
+                      c.readTimeout = 60000
+                      c.setRequestProperty("Range", "bytes=$pos-")
+                      try {
+                          val code = c.responseCode
+                          if (code == 416 && total > 0 && pos >= total) return pos
+                          if (code >= 400) throw IOException("HTTP $code")
+                          if (pos > 0 && code != 206) throw Fatal("The connection dropped and this site does not allow resuming")
+                          if (total < 0) {
+                              val cr = c.getHeaderField("Content-Range")
+                              total = if (cr != null && cr.contains("/")) (cr.substringAfter("/").trim().toLongOrNull() ?: -1L)
+                                  else c.contentLengthLong.let { if (it > 0) it + pos else -1L }
+                          }
+                          c.inputStream.use { i ->
+                              if (pos == 0L) {
+                                  val head = ByteArray(16)
+                                  var n = 0
+                                  while (n < 16) {
+                                      val r = i.read(head, n, 16 - n)
+                                      if (r < 0) break
+                                      n += r
+                                  }
+                                  if (!isVideo(head, n)) throw Fatal("The site sent a web page instead of the video")
+                                  out.write(head, 0, n)
+                                  pos += n
+                              }
+                              var r = i.read(buf)
+                              while (r >= 0) {
+                                  out.write(buf, 0, r)
+                                  pos += r
+                                  if (total > 0) {
+                                      val p = (pos * 100 / total).toInt()
+                                      if (p != pct) { pct = p; say("Video $p% (${pos / 1048576} of ${total / 1048576} MB)") }
+                                  }
+                                  r = i.read(buf)
+                              }
+                          }
+                          if (total < 0 || pos >= total) return pos
+                          throw IOException("connection closed early")
+                      } catch (e: Fatal) {
+                          throw e
+                      } catch (e: IOException) {
+                          tries++
+                          if (tries > 15) throw IOException("The connection kept dropping at ${maxOf(pct, 0)}% (${e.message})")
+                          say("Connection dropped, resuming… (${maxOf(pct, 0)}%)")
+                          Thread.sleep(2000)
+                      } finally {
+                          c.disconnect()
+                      }
+                  }
+              }
+
+              private fun saveWeb(m: Media, n: Int) {
+                  val item = newItem("easydl_web_${System.currentTimeMillis()}_$n.mp4", "video/mp4", true)
+                  try {
+                      val total = contentResolver.openOutputStream(item.first)!!.use { fetchResume(m.url, m.ref, m.gua, it) }
+                      if (total < 300000) throw IOException("The file is too small to be the real video")
+                  } catch (e: Exception) {
+                      contentResolver.delete(item.first, null, null)
+                      throw e
+                  }
+                  finishItem(item)
+              }
+
               private fun save(m: Media, n: Int) {
                   if (m.audio.isNotEmpty()) { saveMux(m, n); return }
+                  if (m.gua.isNotEmpty() && !m.hls) { saveWeb(m, n); return }
                   if (m.hls) { saveHls(m, n); return }
                   if (m.live) { saveLive(m, n); return }
                   val url = pickBest(m)
