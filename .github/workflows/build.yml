@@ -52,8 +52,8 @@ jobs:
               applicationId 'com.pribadi.easydl'
               minSdk 29
               targetSdk 34
-              versionCode 10
-              versionName '4.6'
+              versionCode 11
+              versionName '4.7'
             }
             compileOptions {
               sourceCompatibility JavaVersion.VERSION_17
@@ -257,6 +257,7 @@ jobs:
               private val genRef = HashMap<String, String>()
               private var genBase = ""
               private var genSeen = -1
+              private var quiet = false
 
               private val UA = "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36"
               private val UAD = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
@@ -342,8 +343,20 @@ jobs:
               override fun onCreate(savedInstanceState: Bundle?) {
                   super.onCreate(savedInstanceState)
                   input = EditText(this).apply { hint = "Paste a link, or share it to this app"; setSingleLine() }
+                  // a link pasted or typed into the box starts right away
+                  input.addTextChangedListener(object : android.text.TextWatcher {
+                      override fun beforeTextChanged(t: CharSequence?, a: Int, b: Int, c: Int) {}
+                      override fun onTextChanged(t: CharSequence?, a: Int, b: Int, c: Int) {}
+                      override fun afterTextChanged(e: android.text.Editable?) {
+                          if (quiet) return
+                          val link = LINK.find(e?.toString() ?: "")?.value ?: return
+                          if (link == lastLink) return
+                          skipClipUntil = SystemClock.elapsedRealtime() + 2000
+                          start(link)
+                      }
+                  })
                   status = TextView(this).apply {
-                      text = "Copy a link from Threads, X, TikTok, Facebook, Instagram or YouTube, then open this app."
+                      text = "Easy Downloader 4.7\nCopy a video link from any website (Threads, X, TikTok, Facebook, Instagram, YouTube or others), then open this app. You can also paste it in the box above."
                       setPadding(0, dp(8), 0, dp(8))
                   }
                   list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -354,8 +367,13 @@ jobs:
                   }
                   btn = Button(this).apply {
                       text = "Download"
-                      isEnabled = false
-                      setOnClickListener { download() }
+                      setOnClickListener {
+                          if (items.isEmpty()) {
+                              // nothing loaded yet: start from the link in the box
+                              val link = LINK.find(input.text.toString())?.value
+                              if (link == null) status.text = "Paste a link in the box first." else start(link)
+                          } else download()
+                      }
                   }
                   host = FrameLayout(this)
                   val content = LinearLayout(this).apply {
@@ -479,6 +497,7 @@ jobs:
                       lastLink = ""
                       busy(false)
                       status.text = s
+                      btn.isEnabled = true
                   }
               }
 
@@ -525,13 +544,13 @@ jobs:
 
               private fun get(u: String): String = open(u).inputStream.bufferedReader().readText()
 
+              // every WebView is brand new for every link, so data from an earlier link can never leak in
               private fun baseOf(host: String): String {
                   val p = host.lowercase().split(".")
                   if (p.size <= 2) return host.lowercase()
                   return if (p[p.size - 2].length <= 3 && p.last().length == 2) p.takeLast(3).joinToString(".") else p.takeLast(2).joinToString(".")
               }
 
-              // every WebView is brand new for every link, so data from an earlier link can never leak in
               private fun newWeb(my: Int, ua: String, big: Boolean = false): WebView {
                   host.removeAllViews()
                   web?.destroy()
@@ -625,7 +644,9 @@ jobs:
 
               private fun start(link: String) {
                   lastLink = link
+                  quiet = true
                   input.setText(link)
+                  quiet = false
                   val my = ++gen
                   list.removeAllViews()
                   items.clear()
@@ -1849,4 +1870,370 @@ jobs:
                   return ByteArray(16) { h.substring(it * 2, it * 2 + 2).toInt(16).toByte() }
               }
 
-              private fun parseM
+              private fun parseMedia(url: String, ref: String): Pl {
+                  val t = txt(url, ref)
+                  val segs = ArrayList<Seg>()
+                  var seq = 0L
+                  var key = ""
+                  var iv: ByteArray? = null
+                  var map = ""
+                  var prot = false
+                  for (raw in t.lines()) {
+                      val l = raw.trim()
+                      if (l.startsWith("#EXT-X-MEDIA-SEQUENCE:")) seq = l.substringAfter(":").trim().toLongOrNull() ?: 0L
+                      else if (l.startsWith("#EXT-X-MAP:")) map = absUrl(url, attr(l, "URI") ?: "")
+                      else if (l.startsWith("#EXT-X-KEY:")) {
+                          val mth = attr(l, "METHOD") ?: "NONE"
+                          if (mth == "AES-128") {
+                              key = absUrl(url, attr(l, "URI") ?: "")
+                              iv = attr(l, "IV")?.let { hexIv(it) }
+                          } else if (mth == "NONE") {
+                              key = ""
+                              iv = null
+                          } else prot = true
+                      } else if (l.isNotEmpty() && !l.startsWith("#")) {
+                          segs.add(Seg(absUrl(url, l), key, iv, seq))
+                          seq++
+                      }
+                  }
+                  return Pl(segs, map, prot)
+              }
+
+              private fun getSeg(s: Seg, ref: String, keys: java.util.concurrent.ConcurrentHashMap<String, ByteArray>): ByteArray {
+                  var last: Exception? = null
+                  for (a in 0..2) {
+                      try {
+                          var b = open(s.url, ref).inputStream.use { it.readBytes() }
+                          if (s.keyUrl.isNotEmpty()) {
+                              val k = keys.getOrPut(s.keyUrl) { open(s.keyUrl, ref).inputStream.use { it.readBytes() } }
+                              val iv = s.iv ?: ByteArray(16).also {
+                                  var v = s.seq
+                                  for (j in 15 downTo 8) { it[j] = (v and 0xFF).toByte(); v = v shr 8 }
+                              }
+                              val c = javax.crypto.Cipher.getInstance("AES/CBC/PKCS5Padding")
+                              c.init(javax.crypto.Cipher.DECRYPT_MODE, javax.crypto.spec.SecretKeySpec(k, "AES"), javax.crypto.spec.IvParameterSpec(iv))
+                              b = c.doFinal(b)
+                          }
+                          return b
+                      } catch (e: Exception) {
+                          last = e
+                      }
+                  }
+                  throw IOException("A piece of the video could not be loaded (${last?.message})")
+              }
+
+              private fun fetchPl(p: Pl, ref: String, out: File, label: String) {
+                  if (p.protectedStream) throw IOException("This video is copy-protected (DRM) and cannot be saved")
+                  if (p.segs.isEmpty()) throw IOException("The video list is empty")
+                  val keys = java.util.concurrent.ConcurrentHashMap<String, ByteArray>()
+                  out.outputStream().buffered().use { o ->
+                      if (p.map.isNotEmpty()) o.write(open(p.map, ref).inputStream.use { it.readBytes() })
+                      val pool = java.util.concurrent.Executors.newFixedThreadPool(4)
+                      try {
+                          var i = 0
+                          while (i < p.segs.size) {
+                              val batch = p.segs.subList(i, minOf(i + 8, p.segs.size))
+                              val fs = batch.map { sg -> pool.submit(java.util.concurrent.Callable { getSeg(sg, ref, keys) }) }
+                              for (f in fs) {
+                                  try {
+                                      o.write(f.get())
+                                  } catch (e: java.util.concurrent.ExecutionException) {
+                                      throw IOException(e.cause?.message ?: "download failed")
+                                  }
+                              }
+                              i += batch.size
+                              say("$label ${i * 100 / p.segs.size}%")
+                          }
+                      } finally {
+                          pool.shutdownNow()
+                      }
+                  }
+              }
+
+              private fun saveHls(m: Media, n: Int) {
+                  val ref = m.ref
+                  val top = txt(m.url, ref)
+                  var vurl = m.url
+                  var aurl = ""
+                  if (top.contains("#EXT-X-STREAM-INF")) {
+                      val ls = top.lines().map { it.trim() }
+                      var bestScore = -1L
+                      var bestUri = ""
+                      var group = ""
+                      for (i in ls.indices) {
+                          if (!ls[i].startsWith("#EXT-X-STREAM-INF")) continue
+                          val res = (attr(ls[i], "RESOLUTION") ?: "").split("x")
+                          val px = (res.getOrNull(0)?.toLongOrNull() ?: 0L) * (res.getOrNull(1)?.toLongOrNull() ?: 0L)
+                          val score = px * 1000000L + (attr(ls[i], "BANDWIDTH")?.toLongOrNull() ?: 0L)
+                          var j = i + 1
+                          while (j < ls.size && (ls[j].isEmpty() || ls[j].startsWith("#"))) j++
+                          if (j < ls.size && score > bestScore) {
+                              bestScore = score
+                              bestUri = ls[j]
+                              group = attr(ls[i], "AUDIO") ?: ""
+                          }
+                      }
+                      if (bestUri.isEmpty()) throw IOException("No video found in the list")
+                      vurl = absUrl(m.url, bestUri)
+                      if (group.isNotEmpty()) {
+                          var any = ""
+                          var def = ""
+                          for (l in ls) {
+                              if (!l.startsWith("#EXT-X-MEDIA") || attr(l, "TYPE") != "AUDIO" || attr(l, "GROUP-ID") != group) continue
+                              val uri = attr(l, "URI") ?: continue
+                              if (any.isEmpty()) any = uri
+                              if (def.isEmpty() && attr(l, "DEFAULT") == "YES") def = uri
+                          }
+                          val pick = if (def.isNotEmpty()) def else any
+                          if (pick.isNotEmpty()) aurl = absUrl(m.url, pick)
+                      }
+                  }
+                  val vf = File(cacheDir, "h_v_${System.nanoTime()}.bin")
+                  val af = File(cacheDir, "h_a_${System.nanoTime()}.bin")
+                  try {
+                      val vp = parseMedia(vurl, ref)
+                      fetchPl(vp, ref, vf, "Video")
+                      if (aurl.isNotEmpty()) fetchPl(parseMedia(aurl, ref), ref, af, "Audio")
+                      say("Saving…")
+                      val item = newItem("easydl_web_${System.currentTimeMillis()}_$n.mp4", "video/mp4", true)
+                      var ok = false
+                      try {
+                          contentResolver.openFileDescriptor(item.first, "rw")!!.use { remux(vf.path, if (aurl.isNotEmpty()) af.path else "", it.fileDescriptor) }
+                          ok = true
+                      } catch (e: Exception) {
+                          contentResolver.delete(item.first, null, null)
+                          if (aurl.isNotEmpty()) throw IOException("Could not merge video and audio (${e.message})")
+                      }
+                      if (ok) {
+                          finishItem(item)
+                      } else {
+                          // could not convert: keep the raw stream so nothing is lost
+                          val fmp4 = vp.map.isNotEmpty()
+                          writeBytes(vf.readBytes(), "easydl_web_${System.currentTimeMillis()}_$n." + (if (fmp4) "mp4" else "ts"), if (fmp4) "video/mp4" else "video/mp2t", true)
+                      }
+                  } finally {
+                      vf.delete()
+                      af.delete()
+                  }
+              }
+
+              // copy video (and sound) tracks into a clean MP4
+              private fun remux(vp: String, ap: String, fd: FileDescriptor) {
+                  val mx = MediaMuxer(fd, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+                  val exs = ArrayList<MediaExtractor>()
+                  val maps = ArrayList<HashMap<Int, Int>>()
+                  var started = false
+                  try {
+                      for (k in 0..1) {
+                          val path = if (k == 0) vp else ap
+                          if (path.isEmpty()) continue
+                          val ex = MediaExtractor()
+                          ex.setDataSource(path)
+                          exs.add(ex)
+                          val mp = HashMap<Int, Int>()
+                          for (i in 0 until ex.trackCount) {
+                              val f = ex.getTrackFormat(i)
+                              val mime = f.getString(MediaFormat.KEY_MIME) ?: ""
+                              val take = if (k == 0) (mime.startsWith("video/") || (ap.isEmpty() && mime.startsWith("audio/"))) else mime.startsWith("audio/")
+                              if (take) {
+                                  ex.selectTrack(i)
+                                  mp[i] = mx.addTrack(f)
+                              }
+                          }
+                          maps.add(mp)
+                      }
+                      if (maps.all { it.isEmpty() }) throw IOException("No video track")
+                      mx.start()
+                      started = true
+                      val buf = ByteBuffer.allocate(8 * 1024 * 1024)
+                      val info = MediaCodec.BufferInfo()
+                      while (true) {
+                          var bi = -1
+                          var bt = Long.MAX_VALUE
+                          for (i in exs.indices) {
+                              val t = exs[i].sampleTime
+                              if (t >= 0 && t < bt) { bt = t; bi = i }
+                          }
+                          if (bi < 0) break
+                          val ex = exs[bi]
+                          val outIdx = maps[bi][ex.sampleTrackIndex]
+                          val sz = ex.readSampleData(buf, 0)
+                          if (sz < 0) break
+                          if (outIdx != null) {
+                              info.set(0, sz, ex.sampleTime, ex.sampleFlags)
+                              mx.writeSampleData(outIdx, buf, info)
+                          }
+                          ex.advance()
+                      }
+                  } finally {
+                      try { if (started) mx.stop() } catch (e: Exception) { }
+                      mx.release()
+                      for (e in exs) e.release()
+                  }
+              }
+
+              private fun readAll(u: String, ref: String): ByteArray = open(u, ref).inputStream.use { it.readBytes() }
+
+              private fun writeBytes(b: ByteArray, name: String, mime: String, video: Boolean) {
+                  val item = newItem(name, mime, video)
+                  try {
+                      contentResolver.openOutputStream(item.first)!!.use { it.write(b) }
+                  } catch (e: Exception) {
+                      contentResolver.delete(item.first, null, null)
+                      throw e
+                  }
+                  finishItem(item)
+              }
+
+              // live photo = short video clip (TikTok itself saves it as a normal MP4)
+              private fun saveLive(m: Media, n: Int) {
+                  val b = readAll(pickBest(m), m.ref)
+                  if (kindOf(b, minOf(16, b.size)) == "audio") throw IOException("This clip is sound only, not a video")
+                  writeBytes(b, "easydl_live_${System.currentTimeMillis()}_$n.mp4", "video/mp4", true)
+              }
+
+              private class Cur(var pos: Long = 0L, var pct: Int = -1)
+
+              private fun pull(url: String, ua: String, endv: Long, useParam: Boolean, out: OutputStream, buf: ByteArray, st: Cur, size: Long, label: String) {
+                  val start = st.pos
+                  val u = if (useParam) "$url&range=$start-$endv" else url
+                  val c = open(u, "https://www.youtube.com/", ua)
+                  c.setRequestProperty("Origin", "https://www.youtube.com")
+                  if (!useParam) c.setRequestProperty("Range", "bytes=$start-$endv")
+                  val code = c.responseCode
+                  if (code >= 400) { c.disconnect(); throw IOException("HTTP $code") }
+                  if (!useParam && code == 200 && start > 0) { c.disconnect(); throw IOException("range ignored") }
+                  var got = 0L
+                  c.inputStream.use { i ->
+                      var r = i.read(buf)
+                      while (r >= 0) {
+                          out.write(buf, 0, r)
+                          got += r
+                          st.pos += r
+                          val pct = (st.pos * 100 / size).toInt()
+                          if (pct != st.pct) { st.pct = pct; say("$label $pct%") }
+                          if (st.pos > endv) break
+                          r = i.read(buf)
+                      }
+                  }
+                  if (got == 0L) throw IOException("empty")
+              }
+
+              // download in pieces; when YouTube blocks a piece, resume from the same spot through another YouTube route
+              private fun fetchChunks(url0: String, out: OutputStream, ua0: String, size: Long, label: String, id: String, itag: Int) {
+                  val buf = ByteArray(65536)
+                  if (size <= 0) {
+                      val c = open(url0, "", ua0)
+                      c.inputStream.use { i ->
+                          var r = i.read(buf)
+                          while (r >= 0) { out.write(buf, 0, r); r = i.read(buf) }
+                      }
+                      return
+                  }
+                  val srcs = ArrayList<Pair<String, String>>()
+                  srcs.add(Pair(url0, ua0))
+                  var expanded = false
+                  var cur = 0
+                  val st = Cur()
+                  while (st.pos < size) {
+                      var ok = false
+                      var why = ""
+                      var idx = cur
+                      while (!ok) {
+                          if (idx >= srcs.size) {
+                              if (expanded || id.isEmpty() || itag <= 0) break
+                              expanded = true
+                              say("$label: trying another YouTube route…")
+                              srcs.addAll(ytSources(id, itag, size, url0))
+                              if (idx >= srcs.size) break
+                          }
+                          val s = srcs[idx]
+                          for (variant in 0..1) {
+                              val len = if (variant == 0) 9437184L else 1048576L
+                              val endv = minOf(st.pos + len, size) - 1
+                              try {
+                                  pull(s.first, s.second, endv, variant == 1, out, buf, st, size, label)
+                                  ok = true
+                                  break
+                              } catch (e: IOException) {
+                                  why = e.message ?: "network error"
+                                  if (st.pos >= size) { ok = true; break }
+                              }
+                          }
+                          if (ok) cur = idx else idx++
+                      }
+                      if (!ok) throw IOException("YouTube stopped the download at ${maxOf(st.pct, 0)}% ($why)")
+                  }
+              }
+
+              private fun saveMux(m: Media, n: Int) {
+                  val vf = File(cacheDir, "v_${System.nanoTime()}.bin")
+                  val af = File(cacheDir, "a_${System.nanoTime()}.bin")
+                  try {
+                      vf.outputStream().use { fetchChunks(m.url, it, m.ua, m.size, "Video", m.ytId, m.itag) }
+                      af.outputStream().use { fetchChunks(m.audio, it, m.ua, m.asize, "Audio", m.ytId, m.aitag) }
+                      say("Merging video and audio…")
+                      val ext = if (m.webm) "webm" else "mp4"
+                      val item = newItem("easydl_yt_${System.currentTimeMillis()}_$n.$ext", if (m.webm) "video/webm" else "video/mp4", true)
+                      try {
+                          contentResolver.openFileDescriptor(item.first, "rw")!!.use { mux(vf.path, af.path, it.fileDescriptor, m.webm) }
+                      } catch (e: Exception) {
+                          contentResolver.delete(item.first, null, null)
+                          throw e
+                      }
+                      finishItem(item)
+                  } finally {
+                      vf.delete()
+                      af.delete()
+                  }
+              }
+
+              private fun trackOf(ex: MediaExtractor, prefix: String): Int {
+                  for (i in 0 until ex.trackCount) {
+                      if (ex.getTrackFormat(i).getString(MediaFormat.KEY_MIME)?.startsWith(prefix) == true) return i
+                  }
+                  throw IOException("No $prefix track")
+              }
+
+              private fun mux(vp: String, ap: String, fd: FileDescriptor, webm: Boolean) {
+                  val vex = MediaExtractor()
+                  vex.setDataSource(vp)
+                  val aex = MediaExtractor()
+                  aex.setDataSource(ap)
+                  val vt = trackOf(vex, "video/")
+                  val at = trackOf(aex, "audio/")
+                  vex.selectTrack(vt)
+                  aex.selectTrack(at)
+                  val mx = MediaMuxer(fd, if (webm) MediaMuxer.OutputFormat.MUXER_OUTPUT_WEBM else MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+                  val vi = mx.addTrack(vex.getTrackFormat(vt))
+                  val ai = mx.addTrack(aex.getTrackFormat(at))
+                  mx.start()
+                  val buf = ByteBuffer.allocate(8 * 1024 * 1024)
+                  val info = MediaCodec.BufferInfo()
+                  while (true) {
+                      val vtm = vex.sampleTime
+                      val atm = aex.sampleTime
+                      if (vtm < 0 && atm < 0) break
+                      val useV = vtm >= 0 && (atm < 0 || vtm <= atm)
+                      val ex = if (useV) vex else aex
+                      val sz = ex.readSampleData(buf, 0)
+                      if (sz < 0) break
+                      info.set(0, sz, ex.sampleTime, ex.sampleFlags)
+                      mx.writeSampleData(if (useV) vi else ai, buf, info)
+                      ex.advance()
+                  }
+                  mx.stop()
+                  mx.release()
+                  vex.release()
+                  aex.release()
+              }
+          }
+          EOF
+      - name: Build
+        run: gradle assembleDebug --no-daemon
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ github.run_number }}
+          name: Easy Downloader v${{ github.run_number }}
+          files: app/build/outputs/apk/debug/app-debug.apk
