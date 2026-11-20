@@ -52,8 +52,8 @@ jobs:
               applicationId 'com.pribadi.easydl'
               minSdk 29
               targetSdk 34
-              versionCode 18
-              versionName '5.4'
+              versionCode 19
+              versionName '5.5'
             }
             compileOptions {
               sourceCompatibility JavaVersion.VERSION_17
@@ -301,7 +301,8 @@ jobs:
               private var genPick: Media? = null
               private lateinit var playerBox: FrameLayout
               private lateinit var viewBtn: Button
-              private var clean: VideoView? = null
+              private var clean: WebView? = null
+              @Volatile private var warn = ""
               private var cleanShown = false
               private var genSettled = false
               private var genDirect = ""
@@ -513,7 +514,7 @@ jobs:
                       }
                   })
                   status = TextView(this).apply {
-                      text = "Easy Downloader 5.4\nCopy a video link from any website (Threads, X, TikTok, Facebook, Instagram, YouTube or others), then open this app. You can also paste it in the box above.\nSwipe left to see your downloaded files."
+                      text = "Easy Downloader 5.5\nCopy a video link from any website (Threads, X, TikTok, Facebook, Instagram, YouTube or others), then open this app. You can also paste it in the box above.\nSwipe left to see your downloaded files."
                       setPadding(0, dp(8), 0, dp(8))
                   }
                   list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -711,7 +712,7 @@ jobs:
                               playerBox.visibility = View.VISIBLE
                               text = "Web page"
                               web?.evaluateJavascript("document.querySelectorAll('video').forEach(function(v){v.pause();v.muted=true})", null)
-                              clean?.start()
+                              clean?.evaluateJavascript("try{document.getElementById('v').play()}catch(e){}", null)
                           }
                       }
                   }
@@ -1116,39 +1117,57 @@ jobs:
               }
 
               // ---------- clean player: the found video plays here, without the web page (so no ads at all) ----------
+              // clean player: a small built-in page that only contains the video (hls.js plays streams with picture AND sound)
               private fun showClean(m: Media) {
                   stopClean()
-                  val vv = VideoView(this)
-                  val area = FrameLayout(this)
-                  area.addView(vv, FrameLayout.LayoutParams(-1, -1, Gravity.CENTER))
-                  playerBox.addView(area, FrameLayout.LayoutParams(-1, -1).apply { setMargins(0, 0, 0, dp(8)) })
-                  val mc = MediaController(this)
-                  mc.setAnchorView(area)
-                  vv.setMediaController(mc)
-                  val h = HashMap<String, String>()
-                  h["User-Agent"] = UAD
-                  if (m.ref.isNotEmpty()) h["Referer"] = m.ref
-                  CookieManager.getInstance().getCookie(m.url)?.let { h["Cookie"] = it }
-                  vv.setOnPreparedListener { vv.start(); mc.show(4000) }
-                  var shown = false
-                  vv.setOnInfoListener { _, what, _ ->
-                      if (what == 3) shown = true
-                      false
+                  val cw = WebView(this)
+                  cw.settings.javaScriptEnabled = true
+                  cw.settings.domStorageEnabled = true
+                  cw.settings.mediaPlaybackRequiresUserGesture = false
+                  cw.settings.userAgentString = UAD
+                  cw.setBackgroundColor(Color.BLACK)
+                  cw.webViewClient = object : WebViewClient() {
+                      override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean = true
                   }
-                  handler.postDelayed({
-                      if (clean === vv && !shown && playerBox.visibility == View.VISIBLE) {
-                          showPageView()
-                          say("This video does not play here, so the web page is shown. You can still tap Download below.")
+                  cw.webChromeClient = object : android.webkit.WebChromeClient() {
+                      override fun onShowCustomView(v: View, cb: android.webkit.WebChromeClient.CustomViewCallback) {
+                          fullBox.removeAllViews()
+                          fullBox.addView(v, FrameLayout.LayoutParams(-1, -1))
+                          fullBox.visibility = View.VISIBLE
+                          fullCb = cb
                       }
-                  }, 12000)
-                  vv.setOnErrorListener { _, _, _ ->
-                      // could not play it here: go back to the web page
-                      showPageView()
-                      say("This video only plays on the web page. You can still tap Download below.")
-                      true
+                      override fun onHideCustomView() {
+                          fullBox.removeAllViews()
+                          fullBox.visibility = View.GONE
+                          fullCb = null
+                      }
                   }
-                  vv.setVideoURI(Uri.parse(m.url), h)
-                  clean = vv
+                  cw.addJavascriptInterface(object {
+                      @JavascriptInterface
+                      fun bad() {
+                          runOnUiThread {
+                              if (clean === cw && playerBox.visibility == View.VISIBLE) {
+                                  showPageView()
+                                  say("This video does not play here, so the web page is shown. You can still tap Download below.")
+                              }
+                          }
+                      }
+                  }, "C")
+                  val src = m.url.replace("\\", "\\\\").replace("\"", "\\\"")
+                  val html = "<!doctype html><html><head><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">" +
+                      "<style>html,body{margin:0;height:100%;background:#000}video{width:100%;height:100%;object-fit:contain}</style></head>" +
+                      "<body><video id=\"v\" controls autoplay playsinline></video>" +
+                      "<script src=\"https://cdn.jsdelivr.net/npm/hls.js@1.5.13/dist/hls.min.js\"></script>" +
+                      "<script>var u=\"" + src + "\",v=document.getElementById('v'),isHls=" + m.hls + ";" +
+                      "var fail=function(){try{C.bad()}catch(e){}};" +
+                      "if(isHls&&window.Hls&&Hls.isSupported()){var h=new Hls();h.on(Hls.Events.ERROR,function(e,d){if(d.fatal)fail()});h.loadSource(u);h.attachMedia(v)}" +
+                      "else{v.src=u;v.onerror=fail}" +
+                      "var p=v.play();if(p&&p.catch)p.catch(function(){v.muted=true;v.play()});" +
+                      "setTimeout(function(){if(!(v.currentTime>0))fail()},15000);</script></body></html>"
+                  // same address as the site, so the video server accepts the request
+                  cw.loadDataWithBaseURL(m.ref.ifEmpty { genPage }, html, "text/html", "utf-8", null)
+                  playerBox.addView(cw, FrameLayout.LayoutParams(-1, -1))
+                  clean = cw
                   cleanShown = true
                   playerBox.visibility = View.VISIBLE
                   viewBtn.visibility = View.VISIBLE
@@ -1157,13 +1176,13 @@ jobs:
               }
 
               private fun showPageView() {
-                  clean?.pause()
+                  clean?.evaluateJavascript("try{document.getElementById('v').pause()}catch(e){}", null)
                   playerBox.visibility = View.GONE
                   viewBtn.text = "Player"
               }
 
               private fun stopClean() {
-                  clean?.stopPlayback()
+                  clean?.destroy()
                   clean = null
                   cleanShown = false
                   if (::playerBox.isInitialized) {
@@ -1883,8 +1902,11 @@ jobs:
                   val f = files.maxByOrNull { it.size }
                   var l = lists.maxByOrNull { it.size }
                   // picture-only list: download its sound list too and join them
-                  if (l != null && l.size == 0L && sounds.isNotEmpty())
-                      l = Media(l.url, true, "", l.ref, hls = true, gua = UAD, audio = sounds[0].url)
+                  if (l != null) {
+                      val others = good.filter { it.hls && it.url != l!!.url && it.size == 0L }.map { it.url }
+                      val snd = if (l.size == 0L && sounds.isNotEmpty()) sounds[0].url else ""
+                      l = Media(l.url, true, "", l.ref, hls = true, gua = UAD, audio = snd, alts = others, size = l.size)
+                  }
                   return if (f != null && (l == null || f.size >= 20L * 1048576)) f else l ?: f
               }
 
@@ -2645,6 +2667,7 @@ jobs:
                       var ok = 0
                       var err = ""
                       var stopped = false
+                      warn = ""
                       try {
                           for (n in sel.indices) {
                               if (tok != cancelTok.get()) { stopped = true; break }
@@ -2661,7 +2684,7 @@ jobs:
                           }
                       } finally {
                           val msg = if (stopped) "Download cancelled." + (if (ok > 0) " $ok file(s) were already saved." else "")
-                              else if (ok == sel.size) "Done: $ok of ${sel.size} saved (album EasyDownloader)."
+                              else if (ok == sel.size) "Done: $ok of ${sel.size} saved (album EasyDownloader)." + (if (warn.isNotEmpty()) " Note: $warn" else "")
                               else "Done: $ok of ${sel.size} saved. Error: $err"
                           lastNote = 0L
                           if (active.decrementAndGet() == 0) {
@@ -2992,6 +3015,14 @@ jobs:
                   try {
                       val vp = parseMedia(vurl, ref)
                       fetchPl(vp, ref, vf, "Video")
+                      if (aurl.isEmpty() && !tracksOf(vf.path).second) {
+                          // the picture came without sound: look for the matching sound list
+                          say("Looking for the sound…")
+                          for (alt in m.alts) {
+                              if (alt != vurl && soundOnly(alt, ref)) { aurl = alt; break }
+                          }
+                          if (aurl.isEmpty()) warn = "This stream has no sound track that could be found."
+                      }
                       if (aurl.isNotEmpty()) fetchPl(parseMedia(aurl, ref), ref, af, "Audio")
                       say("Saving…")
                       val item = newItem("easydl_web_${System.currentTimeMillis()}_$n.mp4", "video/mp4", true)
@@ -3017,6 +3048,45 @@ jobs:
               }
 
               // copy video (and sound) tracks into a clean MP4
+              // which tracks a file has: (picture, sound)
+              private fun tracksOf(path: String): Pair<Boolean, Boolean> {
+                  val ex = MediaExtractor()
+                  try {
+                      ex.setDataSource(path)
+                      var v = false
+                      var a = false
+                      for (i in 0 until ex.trackCount) {
+                          val mime = ex.getTrackFormat(i).getString(MediaFormat.KEY_MIME) ?: ""
+                          if (mime.startsWith("video/")) v = true
+                          if (mime.startsWith("audio/")) a = true
+                      }
+                      return Pair(v, a)
+                  } catch (e: Exception) {
+                      return Pair(true, true)
+                  } finally {
+                      ex.release()
+                  }
+              }
+
+              // downloads only the first piece of a list to see whether it is sound only
+              private fun soundOnly(url: String, ref: String): Boolean {
+                  val t = File(cacheDir, "probe_${System.nanoTime()}.bin")
+                  try {
+                      val pl = parseMedia(url, ref)
+                      if (pl.protectedStream || pl.segs.isEmpty()) return false
+                      t.outputStream().use { o ->
+                          if (pl.map.isNotEmpty()) o.write(open(pl.map, ref, UAD).inputStream.use { it.readBytes() })
+                          o.write(getSeg(pl.segs[0], ref, java.util.concurrent.ConcurrentHashMap()))
+                      }
+                      val tr = tracksOf(t.path)
+                      return !tr.first && tr.second
+                  } catch (e: Exception) {
+                      return false
+                  } finally {
+                      t.delete()
+                  }
+              }
+
               private fun remux(vp: String, ap: String, fd: FileDescriptor) {
                   val mx = MediaMuxer(fd, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
                   val exs = ArrayList<MediaExtractor>()
