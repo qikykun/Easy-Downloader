@@ -52,8 +52,8 @@ jobs:
               applicationId 'com.pribadi.easydl'
               minSdk 29
               targetSdk 34
-              versionCode 16
-              versionName '5.2'
+              versionCode 17
+              versionName '5.3'
             }
             compileOptions {
               sourceCompatibility JavaVersion.VERSION_17
@@ -97,6 +97,9 @@ jobs:
                 android:name=".DlService"
                 android:exported="false"
                 android:foregroundServiceType="dataSync"/>
+              <receiver
+                android:name=".CancelReceiver"
+                android:exported="false"/>
             </application>
           </manifest>
           EOF
@@ -223,6 +226,7 @@ jobs:
           // keeps downloads running while you use other apps (shows a notification)
           class DlService : android.app.Service() {
               companion object {
+                  @JvmStatic var onCancel: (() -> Unit)? = null
                   const val CH = "dl"
                   const val ID = 7
                   const val DONE = 8
@@ -231,7 +235,7 @@ jobs:
                       nm.createNotificationChannel(android.app.NotificationChannel(CH, "Downloads", android.app.NotificationManager.IMPORTANCE_LOW))
                       val open = Intent(c, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
                       val pi = android.app.PendingIntent.getActivity(c, 0, open, android.app.PendingIntent.FLAG_IMMUTABLE)
-                      return android.app.Notification.Builder(c, CH)
+                      val b = android.app.Notification.Builder(c, CH)
                           .setSmallIcon(if (ongoing) android.R.drawable.stat_sys_download else android.R.drawable.stat_sys_download_done)
                           .setContentTitle("Easy Downloader")
                           .setContentText(text)
@@ -239,7 +243,12 @@ jobs:
                           .setAutoCancel(!ongoing)
                           .setOnlyAlertOnce(true)
                           .setContentIntent(pi)
-                          .build()
+                      if (ongoing) {
+                          val cp = android.app.PendingIntent.getBroadcast(c, 1, Intent(c, CancelReceiver::class.java), android.app.PendingIntent.FLAG_IMMUTABLE)
+                          b.addAction(android.app.Notification.Action.Builder(
+                              android.graphics.drawable.Icon.createWithResource(c, android.R.drawable.ic_menu_close_clear_cancel), "✕ Cancel", cp).build())
+                      }
+                      return b.build()
                   }
               }
 
@@ -248,6 +257,13 @@ jobs:
               override fun onStartCommand(i: Intent?, flags: Int, id: Int): Int {
                   startForeground(ID, note(this, "Downloading…", true), android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
                   return START_NOT_STICKY
+              }
+          }
+
+          // the ✕ Cancel button in the notification
+          class CancelReceiver : android.content.BroadcastReceiver() {
+              override fun onReceive(c: android.content.Context, i: Intent) {
+                  DlService.onCancel?.invoke()
               }
           }
 
@@ -291,6 +307,17 @@ jobs:
               private var genDirect = ""
               private val active = java.util.concurrent.atomic.AtomicInteger(0)
               private val dlGen = ThreadLocal<Int>()
+              private val cancelTok = java.util.concurrent.atomic.AtomicInteger(0)
+              private val dlTok = ThreadLocal<Int>()
+              private lateinit var dlBar: LinearLayout
+              private lateinit var dlText: TextView
+              private val selected = LinkedHashSet<Uri>()
+              private var selMode = false
+              private val selViews = HashMap<Uri, View>()
+              private lateinit var selBar: LinearLayout
+              private lateinit var selText: TextView
+              @Volatile private var genVids = 0
+              @Volatile private var genPlaying = ""
               @Volatile private var lastNote = 0L
               private val thumbPool = java.util.concurrent.Executors.newFixedThreadPool(3)
               private val swipe by lazy {
@@ -411,19 +438,32 @@ jobs:
           try{new MutationObserver(function(){clearTimeout(window.__ct);window.__ct=setTimeout(window.__cl,200)}).observe(document.documentElement,{childList:true,subtree:true})}catch(x){}}
           window.__cl();
           var send=function(u){try{if(u&&u.indexOf('http')==0)B.v(u,location.href)}catch(e){}};
+          var vids=document.querySelectorAll('video');try{B.n(vids.length)}catch(x){}
           var vs=document.querySelectorAll('video,source');
-          for(var i=0;i<vs.length;i++){var e=vs[i];send(e.currentSrc);send(e.src);try{if(e.tagName=='VIDEO'){if(!e.paused)window.__pl=1;if(!window.__pl&&!e.__ap){e.__ap=1;var p=e.play();if(p&&p.catch)p.catch(function(){e.muted=true;e.play()})}}}catch(x){}}
+          for(var i=0;i<vs.length;i++){var e=vs[i];send(e.currentSrc);send(e.src);try{if(e.tagName=='VIDEO'){if(!e.paused){window.__pl=1;if(e.currentSrc)B.p(e.currentSrc)}if(vids.length==1&&!window.__pl&&!e.__ap){e.__ap=1;var p=e.play();if(p&&p.catch)p.catch(function(){e.muted=true;e.play()})}}}catch(x){}}
           var h=document.documentElement.innerHTML.replace(/\\\//g,'/').replace(/\\u0026/g,'&').replace(/&amp;/g,'&');
           var m=h.match(/https?:\/\/[^"'\s\\<>()]+?\.(?:mp4|m3u8|webm|mkv)(?:\?[^"'\s\\<>()]*)?/g);
           if(m)for(var j=0;j<m.length&&j<40;j++)send(m[j]);
-          var bt=document.querySelectorAll('button,a,div[role=button],input[type=button],input[type=submit],span');
-          for(var k=0;k<bt.length&&k<400;k++){var t=(bt[k].innerText||bt[k].value||'').trim().toLowerCase();if(t.length>0&&t.length<40&&/(turned it off|i('| a)?m human|not a robot|click to play|tap to play|watch now|play video|continue to video|get link|generate|proceed|skip ad|^skip|^continue$|click here to continue|get video|watch video|^ok$|^i agree$|^enter$|i am 18|i'm 18|18\+)/.test(t)&&!/(app|apk|install|extension|vpn|premium|register|sign|login|upgrade)/.test(t)){try{bt[k].click()}catch(x){}}}
-          if(!window.__pl&&!(window.__pc>6)){window.__pc=(window.__pc||0)+1;
-          var pl=document.querySelectorAll('.vjs-big-play-button,.jw-icon-display,.jw-display-icon-container,.plyr__control--overlaid,.play-button,.playbtn,.btn-play,[class*=big-play],[class*=play-btn],[class*=playbtn],[aria-label=Play],[aria-label=play],[title=Play]');
-          for(var q=0;q<pl.length;q++){try{pl[q].click()}catch(x){}}}
+          if(!window.__gc)window.__gc=0;
+          if(window.__gc<4){var bt=document.querySelectorAll('button,div[role=button],input[type=button],input[type=submit]');var hit=[];
+          for(var k=0;k<bt.length&&k<400;k++){var t=(bt[k].innerText||bt[k].value||'').trim().toLowerCase();if(t.length>0&&t.length<40&&/(turned it off|i('| a)?m human|skip ad|click here to continue|continue to video|^i agree$|i am 18|i'm 18|18\+|^enter$)/.test(t)&&!/(app|apk|install|extension|vpn|premium|register|sign|login|upgrade)/.test(t))hit.push(bt[k])}
+          if(hit.length==1){window.__gc++;try{hit[0].click()}catch(x){}}}
+          if(vids.length<=1&&!window.__pl&&!(window.__pc>6)){window.__pc=(window.__pc||0)+1;
+          var pl=document.querySelectorAll('.vjs-big-play-button,.jw-icon-display,.plyr__control--overlaid,[class*=big-play],[aria-label=Play],[title=Play]');
+          if(pl.length==1){try{pl[0].click()}catch(x){}}}
           })();"""
 
               inner class Bridge(private val g: Int) {
+                  @JavascriptInterface
+                  fun n(c: Int) {
+                      if (g == gen) genVids = c
+                  }
+
+                  @JavascriptInterface
+                  fun p(u: String) {
+                      if (g == gen && u.startsWith("http")) genPlaying = u
+                  }
+
                   @JavascriptInterface
                   fun v(u: String, ref: String) {
                       if (g != gen) return
@@ -470,7 +510,7 @@ jobs:
                       }
                   })
                   status = TextView(this).apply {
-                      text = "Easy Downloader 5.2\nCopy a video link from any website (Threads, X, TikTok, Facebook, Instagram, YouTube or others), then open this app. You can also paste it in the box above.\nSwipe left to see your downloaded files."
+                      text = "Easy Downloader 5.3\nCopy a video link from any website (Threads, X, TikTok, Facebook, Instagram, YouTube or others), then open this app. You can also paste it in the box above.\nSwipe left to see your downloaded files."
                       setPadding(0, dp(8), 0, dp(8))
                   }
                   list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -490,6 +530,21 @@ jobs:
                       }
                   }
                   host = FrameLayout(this)
+                  dlText = TextView(this).apply {
+                      setPadding(dp(12), dp(8), dp(8), dp(8))
+                      setTextColor(Color.WHITE)
+                  }
+                  dlBar = LinearLayout(this).apply {
+                      visibility = View.GONE
+                      gravity = Gravity.CENTER_VERTICAL
+                      setBackgroundColor(Color.rgb(46, 160, 67))
+                      addView(dlText, LinearLayout.LayoutParams(0, -2, 1f))
+                      addView(Button(this@MainActivity).apply {
+                          text = "✕"
+                          setOnClickListener { cancelDownloads() }
+                      }, LinearLayout.LayoutParams(dp(56), dp(48)))
+                  }
+                  DlService.onCancel = { runOnUiThread { cancelDownloads() } }
                   content = LinearLayout(this).apply {
                       orientation = LinearLayout.VERTICAL
                       setPadding(dp(16), dp(4), dp(16), dp(16))
@@ -510,6 +565,7 @@ jobs:
                           gravity = Gravity.END
                           addView(allBox)
                       }, LinearLayout.LayoutParams(-1, -2))
+                      addView(dlBar, LinearLayout.LayoutParams(-1, -2))
                       addView(btn)
                       addView(host, LinearLayout.LayoutParams(1, 1))
                   }
@@ -570,12 +626,27 @@ jobs:
 
                   // second page (swipe left): everything downloaded so far
                   filesInfo = TextView(this).apply { setPadding(0, dp(4), 0, dp(8)) }
+                  selText = TextView(this).apply { setPadding(dp(8), 0, dp(8), 0) }
+                  selBar = LinearLayout(this).apply {
+                      visibility = View.GONE
+                      gravity = Gravity.CENTER_VERTICAL
+                      addView(selText, LinearLayout.LayoutParams(0, -2, 1f))
+                      addView(Button(this@MainActivity).apply {
+                          text = "Cancel"
+                          setOnClickListener { exitSel() }
+                      })
+                      addView(Button(this@MainActivity).apply {
+                          text = "🗑 Delete"
+                          setOnClickListener { askDelete(selected.toList()) }
+                      })
+                  }
                   filesGrid = GridLayout(this).apply { columnCount = 3 }
                   filesPage = LinearLayout(this).apply {
                       orientation = LinearLayout.VERTICAL
                       setPadding(dp(16), dp(4), dp(16), dp(16))
                       setBackgroundColor(Color.rgb(250, 250, 250))
                       addView(filesInfo)
+                      addView(selBar, LinearLayout.LayoutParams(-1, -2))
                       addView(ScrollView(this@MainActivity).apply { addView(filesGrid) }, LinearLayout.LayoutParams(-1, 0, 1f))
                   }
                   val pages = FrameLayout(this)
@@ -692,6 +763,7 @@ jobs:
               override fun onBackPressed() {
                   if (fullBox.visibility == View.VISIBLE) fullCb?.onCustomViewHidden()
                   else if (viewer.visibility == View.VISIBLE) closeViewer()
+                  else if (selMode) exitSel()
                   else if (loginHost.visibility == View.VISIBLE) finishLogin(false)
                   else if (webHost.visibility == View.VISIBLE) cancelWeb()
                   else if (page == 1) showPage(0)
@@ -740,7 +812,22 @@ jobs:
                   }
               }
 
+              private class Cancelled : IOException("Download cancelled")
+
+              // called inside every download loop: stops right away after ✕ was pressed
+              private fun chk() {
+                  val t = dlTok.get() ?: return
+                  if (t != cancelTok.get()) throw Cancelled()
+              }
+
+              private fun cancelDownloads() {
+                  if (active.get() == 0) return
+                  cancelTok.incrementAndGet()
+                  dlText.text = "Cancelling…"
+              }
+
               private fun note(text: String) {
+                  runOnUiThread { if (active.get() > 0) dlText.text = text }
                   val now = SystemClock.elapsedRealtime()
                   if (now - lastNote < 800) return
                   lastNote = now
@@ -809,8 +896,11 @@ jobs:
                       val all = queryFiles()
                       runOnUiThread {
                           filesGrid.removeAllViews()
+                          selViews.clear()
+                          selected.retainAll(all.map { it.uri }.toSet())
+                          if (selected.isEmpty()) exitSel()
                           filesInfo.text = if (all.isEmpty()) "Nothing downloaded yet. Swipe right to go back."
-                              else "${all.size} file(s) in album EasyDownloader. Tap to open."
+                              else "${all.size} file(s) in album EasyDownloader. Tap to open, press and hold to select."
                           val gap = dp(4)
                           val cw = (resources.displayMetrics.widthPixels - dp(32) - gap * 6) / 3
                           val ch = cw * 4 / 3
@@ -828,7 +918,22 @@ jobs:
                                   setBackgroundColor(Color.argb(150, 0, 0, 0))
                                   setPadding(dp(6), dp(2), dp(6), dp(2))
                               }, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.START))
-                              cell.setOnClickListener { openViewer(f) }
+                              val mark = TextView(this).apply {
+                                  text = "✓"
+                                  textSize = 28f
+                                  gravity = Gravity.CENTER
+                                  setTextColor(Color.rgb(46, 160, 67))
+                                  setBackgroundColor(Color.argb(150, 255, 255, 255))
+                                  visibility = if (f.uri in selected) View.VISIBLE else View.GONE
+                              }
+                              cell.addView(mark, FrameLayout.LayoutParams(-1, -1))
+                              selViews[f.uri] = mark
+                              cell.setOnClickListener { if (selMode) toggleSel(f.uri) else openViewer(f) }
+                              cell.setOnLongClickListener {
+                                  selMode = true
+                                  toggleSel(f.uri)
+                                  true
+                              }
                               filesGrid.addView(cell, GridLayout.LayoutParams().apply {
                                   width = cw
                                   height = ch
@@ -844,6 +949,71 @@ jobs:
                           }
                       }
                   }.start()
+              }
+
+              private fun toggleSel(u: Uri) {
+                  if (!selected.remove(u)) selected.add(u)
+                  selViews[u]?.visibility = if (u in selected) View.VISIBLE else View.GONE
+                  if (selected.isEmpty()) exitSel()
+                  else {
+                      selMode = true
+                      selBar.visibility = View.VISIBLE
+                      selText.text = "${selected.size} selected"
+                  }
+              }
+
+              private fun exitSel() {
+                  selMode = false
+                  selected.clear()
+                  for (v in selViews.values) v.visibility = View.GONE
+                  if (::selBar.isInitialized) selBar.visibility = View.GONE
+              }
+
+              // asks first, so nothing is deleted by accident
+              private fun askDelete(list: List<Uri>) {
+                  if (list.isEmpty()) return
+                  android.app.AlertDialog.Builder(this)
+                      .setTitle("Delete ${list.size} file(s)?")
+                      .setMessage("They will be removed from Easy Downloader and your gallery, and moved to your phone's trash.")
+                      .setNegativeButton("Cancel", null)
+                      .setPositiveButton("Delete") { _, _ -> trashFiles(list) }
+                      .show()
+              }
+
+              private fun trashFiles(list: List<Uri>) {
+                  Thread {
+                      val left = ArrayList<Uri>()
+                      for (u in list) {
+                          try {
+                              val done = if (android.os.Build.VERSION.SDK_INT >= 30) {
+                                  val v = ContentValues()
+                                  v.put(MediaStore.MediaColumns.IS_TRASHED, 1)
+                                  contentResolver.update(u, v, null, null) > 0
+                              } else contentResolver.delete(u, null, null) > 0
+                              if (!done) left.add(u)
+                          } catch (e: Exception) {
+                              left.add(u)
+                          }
+                      }
+                      runOnUiThread {
+                          exitSel()
+                          if (left.isNotEmpty() && android.os.Build.VERSION.SDK_INT >= 30) {
+                              // files from an older install need the phone's own permission screen
+                              try {
+                                  val pi = MediaStore.createTrashRequest(contentResolver, left, true)
+                                  startIntentSenderForResult(pi.intentSender, 42, null, 0, 0, 0)
+                              } catch (e: Exception) {
+                                  filesInfo.text = "Some files could not be deleted."
+                              }
+                          } else if (left.isNotEmpty()) filesInfo.text = "Some files could not be deleted."
+                          refreshFiles()
+                      }
+                  }.start()
+              }
+
+              override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+                  super.onActivityResult(requestCode, resultCode, data)
+                  if (requestCode == 42) refreshFiles()
               }
 
               private fun openViewer(f: FileItem) {
@@ -879,6 +1049,13 @@ jobs:
                       text = "✕"
                       setOnClickListener { closeViewer() }
                   }, FrameLayout.LayoutParams(dp(56), dp(56), Gravity.TOP or Gravity.END).apply { setMargins(0, dp(32), dp(8), 0) })
+                  viewer.addView(Button(this).apply {
+                      text = "🗑"
+                      setOnClickListener {
+                          closeViewer()
+                          askDelete(listOf(f.uri))
+                      }
+                  }, FrameLayout.LayoutParams(dp(56), dp(56), Gravity.TOP or Gravity.START).apply { setMargins(dp(8), dp(32), 0, 0) })
                   viewer.visibility = View.VISIBLE
               }
 
@@ -1222,6 +1399,8 @@ jobs:
                   genPick = null
                   genSettled = false
                   genDirect = ""
+                  genVids = 0
+                  genPlaying = ""
                   genBtn.text = "Waiting for the video…"
                   genBtn.isEnabled = false
                   synchronized(captured) { captured.clear(); seen.clear() }
@@ -1427,7 +1606,6 @@ jobs:
                           w.evaluateJavascript(GEN_JS, null)
                           w.evaluateJavascript(GEN_HOOK, null)
                           if (cleanShown && playerBox.visibility == View.VISIBLE) w.evaluateJavascript("document.querySelectorAll('video').forEach(function(v){v.pause();v.muted=true})", null)
-                          if (tick >= 3 && tick % 3 == 0 && tick <= 12) tapCenter(w)
                           if (genDirect.isNotEmpty() && genPick == null && tick > 0 && tick % 8 == 0 && tick <= 56) {
                               // waiting pages often let the file through on a later try (like pressing back and opening it again)
                               genChecked.remove(genDirect)
@@ -1441,13 +1619,19 @@ jobs:
                               checkGen(my, fresh)
                           }
                           val good = synchronized(genGood) { ArrayList(genGood) }
-                          val pick = bestGen(good)
-                          if (pick != null && pick !== genPick && genBtn.text.toString() != "Downloading in the background ✓") {
+                          // several videos on the page: only the one you play is used
+                          val playing = genPlaying
+                          var pick: Media? = null
+                          if (playing.isNotEmpty()) pick = good.firstOrNull { it.url == playing } ?: good.firstOrNull { it.url.substringBefore("?") == playing.substringBefore("?") }
+                          if (pick == null && genVids <= 1) pick = bestGen(good)
+                          if (pick == null && genVids > 1 && tick % 5 == 0) say("This page has several videos. Play the one you want, then tap Download below.")
+                          if (pick != null && pick !== genPick) {
                               genPick = pick
                               genBtn.text = "⬇ Download video" + (if (pick.hls) " (stream, best quality)" else if (pick.size > 0) " (${pick.size / 1048576} MB)" else "")
                               genBtn.isEnabled = true
                               say("Video found. Playing it here without the web page (no ads). Tap Download below to save it.")
-                              if (!cleanShown) showClean(pick)
+                              if (!cleanShown && genVids <= 1) showClean(pick)
+                              if (genVids > 1) say("Video found. Tap Download below to save the video you are playing.")
                           } else if (pick == null && tick % 5 == 0 && tick < 60) say("Looking for the video… It starts by itself; if not, tap play. (ads are blocked)")
                       }
                       "th", "ig" -> {
@@ -2399,22 +2583,32 @@ jobs:
                   if (active.getAndIncrement() == 0) {
                       try { startForegroundService(Intent(this, DlService::class.java)) } catch (e: Exception) { }
                   }
+                  dlText.text = "Downloading…"
+                  dlBar.visibility = View.VISIBLE
+                  val tok = cancelTok.get()
                   Thread {
                       dlGen.set(g)
+                      dlTok.set(tok)
                       var ok = 0
                       var err = ""
+                      var stopped = false
                       try {
-                          sel.forEachIndexed { n, m ->
+                          for (n in sel.indices) {
+                              if (tok != cancelTok.get()) { stopped = true; break }
                               say("Downloading ${n + 1} of ${sel.size}… (you can use other apps)")
                               try {
-                                  save(m, n)
+                                  save(sel[n], n)
                                   ok++
+                              } catch (e: Cancelled) {
+                                  stopped = true
+                                  break
                               } catch (e: Exception) {
                                   err = e.message ?: e.javaClass.simpleName
                               }
                           }
                       } finally {
-                          val msg = if (ok == sel.size) "Done: $ok of ${sel.size} saved (album EasyDownloader)."
+                          val msg = if (stopped) "Download cancelled." + (if (ok > 0) " $ok file(s) were already saved." else "")
+                              else if (ok == sel.size) "Done: $ok of ${sel.size} saved (album EasyDownloader)."
                               else "Done: $ok of ${sel.size} saved. Error: $err"
                           lastNote = 0L
                           if (active.decrementAndGet() == 0) {
@@ -2425,6 +2619,7 @@ jobs:
                               (getSystemService(NOTIFICATION_SERVICE) as android.app.NotificationManager).notify(DlService.DONE + g % 1000, DlService.note(this, msg, false))
                           } catch (e: Exception) { }
                           runOnUiThread {
+                              if (active.get() == 0) dlBar.visibility = View.GONE
                               if (g == gen) {
                                   status.text = msg
                                   btn.isEnabled = true
@@ -2513,6 +2708,7 @@ jobs:
                               }
                               var r = i.read(buf)
                               while (r >= 0) {
+                                  chk()
                                   out.write(buf, 0, r)
                                   pos += r
                                   if (total > 0) {
@@ -2525,6 +2721,8 @@ jobs:
                           if (total < 0 || pos >= total) return pos
                           throw IOException("connection closed early")
                       } catch (e: Fatal) {
+                          throw e
+                      } catch (e: Cancelled) {
                           throw e
                       } catch (e: IOException) {
                           tries++
@@ -2579,7 +2777,15 @@ jobs:
                                   if (m.video && kindOf(head, n) == "audio") throw IOException("This file is audio only, not a video")
                                   if (m.gua.isNotEmpty() && !isVideo(head, n)) throw IOException("The site sent a web page instead of the video")
                                   o.write(head, 0, n)
-                                  val total = n + i.copyTo(o)
+                                  var total = n.toLong()
+                                  val cb = ByteArray(65536)
+                                  var rr = i.read(cb)
+                                  while (rr >= 0) {
+                                      chk()
+                                      o.write(cb, 0, rr)
+                                      total += rr
+                                      rr = i.read(cb)
+                                  }
                                   if (m.gua.isNotEmpty() && total < 300000) throw IOException("The file is too small to be the real video")
                               }
                           }
@@ -2670,6 +2876,7 @@ jobs:
                           while (i < p.segs.size) {
                               val batch = p.segs.subList(i, minOf(i + 8, p.segs.size))
                               val fs = batch.map { sg -> pool.submit(java.util.concurrent.Callable { getSeg(sg, ref, keys) }) }
+                              chk()
                               for (f in fs) {
                                   try {
                                       o.write(f.get())
@@ -2843,6 +3050,7 @@ jobs:
                   c.inputStream.use { i ->
                       var r = i.read(buf)
                       while (r >= 0) {
+                          chk()
                           out.write(buf, 0, r)
                           got += r
                           st.pos += r
@@ -2862,7 +3070,7 @@ jobs:
                       val c = open(url0, "", ua0)
                       c.inputStream.use { i ->
                           var r = i.read(buf)
-                          while (r >= 0) { out.write(buf, 0, r); r = i.read(buf) }
+                          while (r >= 0) { chk(); out.write(buf, 0, r); r = i.read(buf) }
                       }
                       return
                   }
@@ -2892,6 +3100,7 @@ jobs:
                                   ok = true
                                   break
                               } catch (e: IOException) {
+                                  if (e is Cancelled) throw e
                                   why = e.message ?: "network error"
                                   if (st.pos >= size) { ok = true; break }
                               }
