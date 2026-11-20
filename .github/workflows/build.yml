@@ -52,8 +52,8 @@ jobs:
               applicationId 'com.pribadi.easydl'
               minSdk 29
               targetSdk 34
-              versionCode 17
-              versionName '5.3'
+              versionCode 18
+              versionName '5.4'
             }
             compileOptions {
               sourceCompatibility JavaVersion.VERSION_17
@@ -412,6 +412,7 @@ jobs:
                   "plyr", "fluidplayer", "bootstrapcdn", "jquery", "hcaptcha", "recaptcha", "cloudflare", "cloudfront", "bunny", "b-cdn", "hls.js", "dplayer", "artplayer")
 
               private val GEN_HOOK = """(function(){if(window.__g)return;window.__g=1;
+          try{var oa=Element.prototype.attachShadow;Element.prototype.attachShadow=function(i){var o={};for(var k in i)o[k]=i[k];o.mode='open';return oa.call(this,o)}}catch(e){}
           var chk=function(u,t){try{if(t&&t.replace(/^\uFEFF/,'').trim().indexOf('#EXTM3U')==0)B.v(u,location.href)}catch(e){}};
           var f=window.fetch;
           if(f){window.fetch=function(){return f.apply(this,arguments).then(function(r){try{var u=r.url;var ct=(r.headers.get('content-type')||'').toLowerCase();if(ct.indexOf('video')<0&&ct.indexOf('octet')<0&&ct.indexOf('image')<0&&ct.indexOf('audio')<0)r.clone().text().then(function(t){chk(u,t)})}catch(e){}return r})}}
@@ -433,7 +434,9 @@ jobs:
           if(e.shadowRoot){var st=(e.shadowRoot.textContent||'').toLowerCase();if(rx.test(st)&&!hasMedia(e)){e.remove();continue}}
           if(e.tagName=='IFRAME'){var cf=getComputedStyle(e);if(cf.position=='fixed'&&!/(embed|player|video|\/e\/)/i.test(e.src||''))e.remove();continue}
           if(e.children.length<=3){var t=(e.innerText||'').toLowerCase();if(t.length>0&&t.length<300&&rx.test(t))kill(e)}}
-          var top=document.querySelectorAll('body > *');for(var y=0;y<top.length;y++){var c2=getComputedStyle(top[y]);if(c2.position=='fixed'&&parseInt(c2.zIndex||'0')>=10000&&!hasMedia(top[y]))top[y].remove()}
+          var area=innerWidth*innerHeight;
+          var top=document.querySelectorAll('html > *:not(head):not(body), body > *, body > * > *');for(var y=0;y<top.length;y++){var el2=top[y];if(!el2.isConnected)continue;var c2=getComputedStyle(el2);var z=parseInt(c2.zIndex||'0')||0;
+          if((c2.position=='fixed'&&z>=1000)||(c2.position=='absolute'&&z>=10000)){var rc=el2.getBoundingClientRect();if(rc.width*rc.height>area*0.2&&!hasMedia(el2))el2.remove()}}
           }catch(x){}};
           try{new MutationObserver(function(){clearTimeout(window.__ct);window.__ct=setTimeout(window.__cl,200)}).observe(document.documentElement,{childList:true,subtree:true})}catch(x){}}
           window.__cl();
@@ -510,7 +513,7 @@ jobs:
                       }
                   })
                   status = TextView(this).apply {
-                      text = "Easy Downloader 5.3\nCopy a video link from any website (Threads, X, TikTok, Facebook, Instagram, YouTube or others), then open this app. You can also paste it in the box above.\nSwipe left to see your downloaded files."
+                      text = "Easy Downloader 5.4\nCopy a video link from any website (Threads, X, TikTok, Facebook, Instagram, YouTube or others), then open this app. You can also paste it in the box above.\nSwipe left to see your downloaded files."
                       setPadding(0, dp(8), 0, dp(8))
                   }
                   list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -735,6 +738,10 @@ jobs:
                               text = "No-ads browser"
                               setPadding(dp(16), dp(12), dp(8), dp(12))
                           }, LinearLayout.LayoutParams(0, -2, 1f))
+                          addView(Button(this@MainActivity).apply {
+                              text = "◀"
+                              setOnClickListener { webBack() }
+                          }, LinearLayout.LayoutParams(dp(56), -2))
                           addView(viewBtn)
                           addView(Button(this@MainActivity).apply {
                               text = "Close"
@@ -765,7 +772,7 @@ jobs:
                   else if (viewer.visibility == View.VISIBLE) closeViewer()
                   else if (selMode) exitSel()
                   else if (loginHost.visibility == View.VISIBLE) finishLogin(false)
-                  else if (webHost.visibility == View.VISIBLE) cancelWeb()
+                  else if (webHost.visibility == View.VISIBLE) webBack()
                   else if (page == 1) showPage(0)
                   else super.onBackPressed()
               }
@@ -1123,6 +1130,17 @@ jobs:
                   if (m.ref.isNotEmpty()) h["Referer"] = m.ref
                   CookieManager.getInstance().getCookie(m.url)?.let { h["Cookie"] = it }
                   vv.setOnPreparedListener { vv.start(); mc.show(4000) }
+                  var shown = false
+                  vv.setOnInfoListener { _, what, _ ->
+                      if (what == 3) shown = true
+                      false
+                  }
+                  handler.postDelayed({
+                      if (clean === vv && !shown && playerBox.visibility == View.VISIBLE) {
+                          showPageView()
+                          say("This video does not play here, so the web page is shown. You can still tap Download below.")
+                      }
+                  }, 12000)
                   vv.setOnErrorListener { _, _, _ ->
                       // could not play it here: go back to the web page
                       showPageView()
@@ -1153,6 +1171,28 @@ jobs:
                       playerBox.visibility = View.GONE
                   }
                   if (::viewBtn.isInitialized) viewBtn.visibility = View.GONE
+              }
+
+              // back = previous page in the browser (e.g. from a video back to the list); closes only on the first page
+              private fun webBack() {
+                  val w = web
+                  if (w != null && w.canGoBack()) {
+                      stopClean()
+                      w.goBack()
+                  } else cancelWeb()
+              }
+
+              private fun resetGenPage() {
+                  synchronized(genUrls) { genUrls.clear(); genRef.clear() }
+                  synchronized(genGood) { genGood.clear() }
+                  genChecked.clear()
+                  genPick = null
+                  genPlaying = ""
+                  genVids = 0
+                  genGoodAt = -1
+                  stopClean()
+                  genBtn.text = "Waiting for the video…"
+                  genBtn.isEnabled = false
               }
 
               private fun cancelWeb() {
@@ -1326,6 +1366,11 @@ jobs:
 
                       override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
                           if (plat == "gen" && !genSettled && url != null && url.startsWith("http")) genBase = baseOf(Uri.parse(url).host ?: "")
+                          // a new page (you picked a video or went back): look for its video from scratch
+                          if (plat == "gen" && genSettled && url != null && url.startsWith("http") && url != genPage) {
+                              genPage = url
+                              resetGenPage()
+                          }
                           if (plat != "tt") view.evaluateJavascript(HOOK, null)
                           if (plat == "gen") view.evaluateJavascript(GEN_HOOK, null)
                       }
@@ -1625,12 +1670,12 @@ jobs:
                           if (playing.isNotEmpty()) pick = good.firstOrNull { it.url == playing } ?: good.firstOrNull { it.url.substringBefore("?") == playing.substringBefore("?") }
                           if (pick == null && genVids <= 1) pick = bestGen(good)
                           if (pick == null && genVids > 1 && tick % 5 == 0) say("This page has several videos. Play the one you want, then tap Download below.")
-                          if (pick != null && pick !== genPick) {
+                          if (pick != null && (pick.url != genPick?.url || pick.audio != genPick?.audio)) {
                               genPick = pick
                               genBtn.text = "⬇ Download video" + (if (pick.hls) " (stream, best quality)" else if (pick.size > 0) " (${pick.size / 1048576} MB)" else "")
                               genBtn.isEnabled = true
                               say("Video found. Playing it here without the web page (no ads). Tap Download below to save it.")
-                              if (!cleanShown && genVids <= 1) showClean(pick)
+                              if (!cleanShown && genVids <= 1 && pick.audio.isEmpty()) showClean(pick)
                               if (genVids > 1) say("Video found. Tap Download below to save the video you are playing.")
                           } else if (pick == null && tick % 5 == 0 && tick < 60) say("Looking for the video… It starts by itself; if not, tap play. (ads are blocked)")
                       }
@@ -1816,8 +1861,12 @@ jobs:
                               if (r.first == "video" && (r.second < 0 || r.second >= 300000)) {
                                   synchronized(genGood) { genGood.add(Media(u, true, "", ref, size = r.second, gua = UAD)) }
                               } else if (r.first == "hls") {
-                                  val master = try { txt(u, ref).contains("#EXT-X-STREAM-INF") } catch (e: Exception) { false }
-                                  synchronized(genGood) { genGood.add(Media(u, true, "", ref, hls = true, size = if (master) 1L else 0L, gua = UAD)) }
+                                  val body = try { txt(u, ref) } catch (e: Exception) { "" }
+                                  val master = body.contains("#EXT-X-STREAM-INF")
+                                  val seg = body.lines().map { it.trim() }.firstOrNull { it.isNotEmpty() && !it.startsWith("#") }?.lowercase() ?: ""
+                                  // a list with only sound (players often load picture and sound separately)
+                                  val audioOnly = !master && (u.lowercase().contains("audio") || seg.contains("audio") || Regex("\\.(aac|m4a|mp3)(\\?|$)").containsMatchIn(seg))
+                                  synchronized(genGood) { genGood.add(Media(u, true, "", ref, hls = true, size = if (master) 1L else 0L, gua = UAD, label = if (audioOnly) "audio" else "")) }
                               }
                           }
                       } finally {
@@ -1829,9 +1878,13 @@ jobs:
               // the biggest real video file wins (= best quality); a stream list is used when there is no file
               private fun bestGen(good: List<Media>): Media? {
                   val files = good.filter { !it.hls }
-                  val lists = good.filter { it.hls }
+                  val lists = good.filter { it.hls && it.label != "audio" }
+                  val sounds = good.filter { it.hls && it.label == "audio" }
                   val f = files.maxByOrNull { it.size }
-                  val l = lists.maxByOrNull { it.size }
+                  var l = lists.maxByOrNull { it.size }
+                  // picture-only list: download its sound list too and join them
+                  if (l != null && l.size == 0L && sounds.isNotEmpty())
+                      l = Media(l.url, true, "", l.ref, hls = true, gua = UAD, audio = sounds[0].url)
                   return if (f != null && (l == null || f.size >= 20L * 1048576)) f else l ?: f
               }
 
@@ -2748,6 +2801,7 @@ jobs:
               }
 
               private fun save(m: Media, n: Int) {
+                  if (m.hls) { saveHls(m, n); return }
                   if (m.audio.isNotEmpty()) { saveMux(m, n); return }
                   if (m.gua.isNotEmpty() && !m.hls) { saveWeb(m, n); return }
                   if (m.hls) { saveHls(m, n); return }
@@ -2843,7 +2897,8 @@ jobs:
 
               private fun getSeg(s: Seg, ref: String, keys: java.util.concurrent.ConcurrentHashMap<String, ByteArray>): ByteArray {
                   var last: Exception? = null
-                  for (a in 0..2) {
+                  for (a in 0..5) {
+                      if (a > 0) Thread.sleep(1500L * a)
                       try {
                           var b = open(s.url, ref, UAD).inputStream.use { it.readBytes() }
                           if (s.keyUrl.isNotEmpty()) {
@@ -2931,6 +2986,7 @@ jobs:
                           if (pick.isNotEmpty()) aurl = absUrl(m.url, pick)
                       }
                   }
+                  if (aurl.isEmpty() && m.audio.isNotEmpty()) aurl = m.audio
                   val vf = File(cacheDir, "h_v_${System.nanoTime()}.bin")
                   val af = File(cacheDir, "h_a_${System.nanoTime()}.bin")
                   try {
