@@ -52,8 +52,8 @@ jobs:
               applicationId 'com.pribadi.easydl'
               minSdk 29
               targetSdk 34
-              versionCode 14
-              versionName '5.0'
+              versionCode 15
+              versionName '5.1'
             }
             compileOptions {
               sourceCompatibility JavaVersion.VERSION_17
@@ -283,6 +283,10 @@ jobs:
               private var fullCb: android.webkit.WebChromeClient.CustomViewCallback? = null
               private var page = 0
               private var genPick: Media? = null
+              private lateinit var playerBox: FrameLayout
+              private lateinit var viewBtn: Button
+              private var clean: VideoView? = null
+              private var cleanShown = false
               private var genSettled = false
               private val active = java.util.concurrent.atomic.AtomicInteger(0)
               private val dlGen = ThreadLocal<Int>()
@@ -390,6 +394,15 @@ jobs:
           })();"""
 
               private val GEN_JS = """(function(){
+          if(!window.__cl){window.__cl=function(){try{var rx=/(click allow|not a robot|press allow|e-captcha|allow notifications|confirm to continue|please confirm|tap allow|confirm you are)/;
+          var es=document.querySelectorAll('body *');for(var i=0;i<es.length&&i<4000;i++){var e=es[i];
+          if(e.shadowRoot){var st=(e.shadowRoot.textContent||'').toLowerCase();if(rx.test(st)||e.shadowRoot.querySelector('iframe')){e.remove();continue}}
+          if(e.tagName=='IFRAME'){var cf=getComputedStyle(e);if((cf.position=='fixed'||cf.position=='absolute')&&!/(embed|player|video|\/e\/)/i.test(e.src||''))e.remove();continue}}
+          var c=document.elementFromPoint(innerWidth/2,innerHeight/2);var k=0;
+          while(c&&c!=document.body&&c.tagName!='VIDEO'&&k<3){k++;var t=(c.innerText||'').toLowerCase();
+          if((c.tagName=='IFRAME'&&!/(embed|player|video|\/e\/)/i.test(c.src||''))||(c.tagName!='IFRAME'&&t.length<400&&rx.test(t))){var p=c;var best=null;while(p&&p!=document.body){var s2=getComputedStyle(p);if(s2.position=='fixed'||s2.position=='absolute')best=p;p=p.parentElement}(best||c).remove();c=document.elementFromPoint(innerWidth/2,innerHeight/2)}else break}}catch(x){}};
+          try{new MutationObserver(function(){clearTimeout(window.__ct);window.__ct=setTimeout(window.__cl,150)}).observe(document.documentElement,{childList:true,subtree:true})}catch(x){}}
+          window.__cl();
           try{var all=document.querySelectorAll('body *');for(var z=0;z<all.length&&z<3000;z++){var el=all[z];var tx=(el.innerText||'').toLowerCase();
           if(tx.length<300&&/(click allow|not a robot|press allow|e-captcha|allow notifications|confirm to continue|please confirm|you are not a robot|tap allow)/.test(tx)){var p=el;while(p&&p!=document.body){var cs=getComputedStyle(p);if(cs.position=='fixed'||cs.position=='absolute'){p.remove();break}p=p.parentElement}}}
           var top=document.querySelectorAll('body > *');for(var y=0;y<top.length;y++){var c2=getComputedStyle(top[y]);if(c2.position=='fixed'&&parseInt(c2.zIndex||'0')>=10000&&!top[y].querySelector('video'))top[y].remove()}}catch(x){}
@@ -454,7 +467,7 @@ jobs:
                       }
                   })
                   status = TextView(this).apply {
-                      text = "Easy Downloader 5.0\nCopy a video link from any website (Threads, X, TikTok, Facebook, Instagram, YouTube or others), then open this app. You can also paste it in the box above.\nSwipe left to see your downloaded files."
+                      text = "Easy Downloader 5.1\nCopy a video link from any website (Threads, X, TikTok, Facebook, Instagram, YouTube or others), then open this app. You can also paste it in the box above.\nSwipe left to see your downloaded files."
                       setPadding(0, dp(8), 0, dp(8))
                   }
                   list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -478,6 +491,16 @@ jobs:
                       orientation = LinearLayout.VERTICAL
                       setPadding(dp(16), dp(4), dp(16), dp(16))
                       addView(input)
+                      addView(LinearLayout(this@MainActivity).apply {
+                          addView(Button(this@MainActivity).apply {
+                              text = "Clear"
+                              setOnClickListener { clearLink() }
+                          }, LinearLayout.LayoutParams(0, -2, 1f))
+                          addView(Button(this@MainActivity).apply {
+                              text = "Paste"
+                              setOnClickListener { pasteLink() }
+                          }, LinearLayout.LayoutParams(0, -2, 1f))
+                      }, LinearLayout.LayoutParams(-1, -2))
                       addView(status)
                       addView(ScrollView(this@MainActivity).apply { addView(list) }, LinearLayout.LayoutParams(-1, 0, 1f))
                       addView(LinearLayout(this@MainActivity).apply {
@@ -598,6 +621,23 @@ jobs:
                       setBackgroundColor(Color.rgb(46, 160, 67))
                   }
                   webBox = FrameLayout(this)
+                  playerBox = FrameLayout(this).apply {
+                      visibility = View.GONE
+                      setBackgroundColor(Color.BLACK)
+                      isClickable = true
+                  }
+                  viewBtn = Button(this).apply {
+                      visibility = View.GONE
+                      setOnClickListener {
+                          if (playerBox.visibility == View.VISIBLE) showPageView()
+                          else {
+                              playerBox.visibility = View.VISIBLE
+                              text = "Web page"
+                              web?.evaluateJavascript("document.querySelectorAll('video').forEach(function(v){v.pause();v.muted=true})", null)
+                              clean?.start()
+                          }
+                      }
+                  }
                   genBtn = Button(this).apply {
                       text = "Waiting for the video…"
                       isEnabled = false
@@ -621,6 +661,7 @@ jobs:
                               text = "No-ads browser"
                               setPadding(dp(16), dp(12), dp(8), dp(12))
                           }, LinearLayout.LayoutParams(0, -2, 1f))
+                          addView(viewBtn)
                           addView(Button(this@MainActivity).apply {
                               text = "Close"
                               setOnClickListener { cancelWeb() }
@@ -672,11 +713,16 @@ jobs:
                   if (loginHost.visibility == View.VISIBLE) return
                   if (webHost.visibility == View.VISIBLE) return
                   if (viewer.visibility == View.VISIBLE) return
-                  val cm = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
-                  val text = cm.primaryClip?.takeIf { it.itemCount > 0 }
-                      ?.getItemAt(0)?.coerceToText(this)?.toString() ?: return
-                  val link = LINK.find(text)?.value ?: return
-                  if (link == lastLink) return
+                  val link = clipLink() ?: return
+                  if (link == lastLink) {
+                      // already used: just put it back in the box (tap Download to run it again)
+                      if (input.text.toString() != link) {
+                          quiet = true
+                          input.setText(link)
+                          quiet = false
+                      }
+                      return
+                  }
                   start(link)
               }
 
@@ -801,12 +847,14 @@ jobs:
                   viewer.removeAllViews()
                   if (f.video) {
                       val vv = android.widget.VideoView(this)
+                      val area = FrameLayout(this)
+                      area.addView(vv, FrameLayout.LayoutParams(-1, -1, Gravity.CENTER))
+                      viewer.addView(area, FrameLayout.LayoutParams(-1, -1).apply { setMargins(0, dp(96), 0, dp(120)) })
                       val mc = android.widget.MediaController(this)
-                      mc.setAnchorView(vv)
+                      mc.setAnchorView(area)
                       vv.setMediaController(mc)
                       vv.setVideoURI(f.uri)
-                      vv.setOnPreparedListener { vv.start() }
-                      viewer.addView(vv, FrameLayout.LayoutParams(-1, -1, Gravity.CENTER))
+                      vv.setOnPreparedListener { vv.start(); mc.show(4000) }
                   } else {
                       val iv = ImageView(this).apply { scaleType = ImageView.ScaleType.FIT_CENTER }
                       viewer.addView(iv, FrameLayout.LayoutParams(-1, -1))
@@ -832,26 +880,105 @@ jobs:
               }
 
               private fun closeViewer() {
+                  for (i in 0 until viewer.childCount) {
+                      val c = viewer.getChildAt(i)
+                      if (c is FrameLayout && c.childCount > 0) (c.getChildAt(0) as? VideoView)?.stopPlayback()
+                  }
                   viewer.visibility = View.GONE
                   viewer.removeAllViews()
               }
 
               private fun closeWeb() {
                   if (webHost.visibility != View.VISIBLE) return
+                  stopClean()
                   webHost.visibility = View.GONE
                   webBox.removeAllViews()
                   web?.destroy()
                   web = null
               }
 
-              private fun cancelWeb() {
+              private fun clipLink(): String? {
+                  val cm = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
+                  val text = cm.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(this)?.toString() ?: return null
+                  return LINK.find(text)?.value
+              }
+
+              private fun clearLink() {
                   gen++
                   pollStop = true
-                  lastLink = ""
-                  closeWeb()
                   busy(false)
+                  quiet = true
+                  input.setText("")
+                  quiet = false
+                  list.removeAllViews()
+                  items.clear()
+                  overlays.clear()
+                  chosen = BooleanArray(0)
+                  allBox.visibility = View.GONE
                   btn.isEnabled = true
-                  status.text = "Closed. Copy or paste a link to try again."
+                  status.text = "Cleared. Copy a link, then tap Paste (or just come back to this app)."
+              }
+
+              private fun pasteLink() {
+                  val link = clipLink()
+                  if (link == null) {
+                      status.text = "There is no link in your clipboard. Copy a link first."
+                      return
+                  }
+                  start(link)
+              }
+
+              // ---------- clean player: the found video plays here, without the web page (so no ads at all) ----------
+              private fun showClean(m: Media) {
+                  stopClean()
+                  val vv = VideoView(this)
+                  val area = FrameLayout(this)
+                  area.addView(vv, FrameLayout.LayoutParams(-1, -1, Gravity.CENTER))
+                  playerBox.addView(area, FrameLayout.LayoutParams(-1, -1).apply { setMargins(0, 0, 0, dp(8)) })
+                  val mc = MediaController(this)
+                  mc.setAnchorView(area)
+                  vv.setMediaController(mc)
+                  val h = HashMap<String, String>()
+                  h["User-Agent"] = UAD
+                  if (m.ref.isNotEmpty()) h["Referer"] = m.ref
+                  CookieManager.getInstance().getCookie(m.url)?.let { h["Cookie"] = it }
+                  vv.setOnPreparedListener { vv.start(); mc.show(4000) }
+                  vv.setOnErrorListener { _, _, _ ->
+                      // could not play it here: go back to the web page
+                      showPageView()
+                      say("This video only plays on the web page. You can still tap Download below.")
+                      true
+                  }
+                  vv.setVideoURI(Uri.parse(m.url), h)
+                  clean = vv
+                  cleanShown = true
+                  playerBox.visibility = View.VISIBLE
+                  viewBtn.visibility = View.VISIBLE
+                  viewBtn.text = "Web page"
+                  web?.evaluateJavascript("document.querySelectorAll('video').forEach(function(v){v.pause();v.muted=true})", null)
+              }
+
+              private fun showPageView() {
+                  clean?.pause()
+                  playerBox.visibility = View.GONE
+                  viewBtn.text = "Player"
+              }
+
+              private fun stopClean() {
+                  clean?.stopPlayback()
+                  clean = null
+                  cleanShown = false
+                  if (::playerBox.isInitialized) {
+                      playerBox.removeAllViews()
+                      playerBox.visibility = View.GONE
+                  }
+                  if (::viewBtn.isInitialized) viewBtn.visibility = View.GONE
+              }
+
+              private fun cancelWeb() {
+                  closeWeb()
+                  clearLink()
+                  status.text = "Closed. Copy a link, then tap Paste (or just come back to this app)."
               }
 
               private fun fail(my: Int, s: String) = runOnUiThread {
@@ -1034,6 +1161,7 @@ jobs:
                   }
                   if (big) {
                       webBox.addView(w, FrameLayout.LayoutParams(-1, -1))
+                      webBox.addView(playerBox, FrameLayout.LayoutParams(-1, -1))
                       webHost.visibility = View.VISIBLE
                       busy(false)
                   } else host.addView(w, FrameLayout.LayoutParams(1, 1))
@@ -1294,6 +1422,7 @@ jobs:
                       "gen" -> {
                           w.evaluateJavascript(GEN_JS, null)
                           w.evaluateJavascript(GEN_HOOK, null)
+                          if (cleanShown && playerBox.visibility == View.VISIBLE) w.evaluateJavascript("document.querySelectorAll('video').forEach(function(v){v.pause();v.muted=true})", null)
                           if (tick >= 3 && tick % 3 == 0 && tick <= 12) tapCenter(w)
                           // every link found is checked first: only real video files count
                           val fresh = synchronized(genUrls) { genUrls.filter { it !in genChecked } }
@@ -1307,7 +1436,8 @@ jobs:
                               genPick = pick
                               genBtn.text = "⬇ Download video" + (if (pick.hls) " (stream, best quality)" else if (pick.size > 0) " (${pick.size / 1048576} MB)" else "")
                               genBtn.isEnabled = true
-                              say("Video found. Watch it here, or tap Download below. (ads are blocked)")
+                              say("Video found. Playing it here without the web page (no ads). Tap Download below to save it.")
+                              if (!cleanShown) showClean(pick)
                           } else if (pick == null && tick % 5 == 0 && tick < 60) say("Looking for the video… It starts by itself; if not, tap play. (ads are blocked)")
                       }
                       "th", "ig" -> {
