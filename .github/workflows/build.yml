@@ -52,8 +52,8 @@ jobs:
               applicationId 'com.pribadi.easydl'
               minSdk 29
               targetSdk 34
-              versionCode 6
-              versionName '4.2'
+              versionCode 7
+              versionName '4.3'
             }
             compileOptions {
               sourceCompatibility JavaVersion.VERSION_17
@@ -68,6 +68,8 @@ jobs:
             <uses-permission android:name="android.permission.INTERNET"/>
             <application
               android:label="Easy Downloader"
+              android:icon="@mipmap/ic_launcher"
+              android:roundIcon="@mipmap/ic_launcher"
               android:usesCleartextTraffic="true"
               android:theme="@android:style/Theme.Material.Light.NoActionBar">
               <activity
@@ -86,6 +88,57 @@ jobs:
               </activity>
             </application>
           </manifest>
+          EOF
+          mkdir -p app/src/main/res/mipmap-anydpi-v26 app/src/main/res/drawable
+          cat > app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+            <background android:drawable="@drawable/ic_bg"/>
+            <foreground android:drawable="@drawable/ic_fg"/>
+            <monochrome android:drawable="@drawable/ic_mono"/>
+          </adaptive-icon>
+          EOF
+          cat > app/src/main/res/drawable/ic_bg.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+            <gradient android:type="radial" android:gradientRadius="76dp" android:centerX="0.5" android:centerY="0.5" android:startColor="#16473A" android:endColor="#06100D"/>
+          </shape>
+          EOF
+          cat > app/src/main/res/drawable/ic_fg.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+            android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+            <path android:fillColor="#2400E676" android:pathData="M54,54m-19,0a19,19 0 1,0 38,0a19,19 0 1,0 -38,0"/>
+            <path android:fillColor="#00E676" android:strokeColor="#00E676" android:strokeWidth="2.4" android:strokeLineJoin="round" android:pathData="M54,45 L44.5,34.5 L50,34.5 L50,23 L58,23 L58,34.5 L63.5,34.5 Z"/>
+            <group android:pivotX="54" android:pivotY="54" android:rotation="180">
+              <path android:fillColor="#00E676" android:strokeColor="#00E676" android:strokeWidth="2.4" android:strokeLineJoin="round" android:pathData="M54,45 L44.5,34.5 L50,34.5 L50,23 L58,23 L58,34.5 L63.5,34.5 Z"/>
+            </group>
+            <group android:pivotX="54" android:pivotY="54" android:rotation="90">
+              <path android:fillColor="#69F0AE" android:strokeColor="#69F0AE" android:strokeWidth="2.4" android:strokeLineJoin="round" android:pathData="M54,45 L44.5,34.5 L50,34.5 L50,23 L58,23 L58,34.5 L63.5,34.5 Z"/>
+            </group>
+            <group android:pivotX="54" android:pivotY="54" android:rotation="270">
+              <path android:fillColor="#69F0AE" android:strokeColor="#69F0AE" android:strokeWidth="2.4" android:strokeLineJoin="round" android:pathData="M54,45 L44.5,34.5 L50,34.5 L50,23 L58,23 L58,34.5 L63.5,34.5 Z"/>
+            </group>
+            <path android:fillColor="#00000000" android:strokeColor="#B300E676" android:strokeWidth="1.4" android:pathData="M54,54m-6.5,0a6.5,6.5 0 1,0 13,0a6.5,6.5 0 1,0 -13,0"/>
+            <path android:fillColor="#EFFFF6" android:pathData="M54,54m-3.4,0a3.4,3.4 0 1,0 6.8,0a3.4,3.4 0 1,0 -6.8,0"/>
+          </vector>
+          EOF
+          cat > app/src/main/res/drawable/ic_mono.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+            android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+            <path android:fillColor="#000000" android:strokeColor="#000000" android:strokeWidth="2.4" android:strokeLineJoin="round" android:pathData="M54,45 L44.5,34.5 L50,34.5 L50,23 L58,23 L58,34.5 L63.5,34.5 Z"/>
+            <group android:pivotX="54" android:pivotY="54" android:rotation="90">
+              <path android:fillColor="#000000" android:strokeColor="#000000" android:strokeWidth="2.4" android:strokeLineJoin="round" android:pathData="M54,45 L44.5,34.5 L50,34.5 L50,23 L58,23 L58,34.5 L63.5,34.5 Z"/>
+            </group>
+            <group android:pivotX="54" android:pivotY="54" android:rotation="180">
+              <path android:fillColor="#000000" android:strokeColor="#000000" android:strokeWidth="2.4" android:strokeLineJoin="round" android:pathData="M54,45 L44.5,34.5 L50,34.5 L50,23 L58,23 L58,34.5 L63.5,34.5 Z"/>
+            </group>
+            <group android:pivotX="54" android:pivotY="54" android:rotation="270">
+              <path android:fillColor="#000000" android:strokeColor="#000000" android:strokeWidth="2.4" android:strokeLineJoin="round" android:pathData="M54,45 L44.5,34.5 L50,34.5 L50,23 L58,23 L58,34.5 L63.5,34.5 Z"/>
+            </group>
+            <path android:fillColor="#000000" android:pathData="M54,54m-3.4,0a3.4,3.4 0 1,0 6.8,0a3.4,3.4 0 1,0 -6.8,0"/>
+          </vector>
           EOF
           cat > app/src/main/java/com/pribadi/easydl/MainActivity.kt <<'EOF'
           package com.pribadi.easydl
@@ -145,10 +198,13 @@ jobs:
               val label: String = "",
               val ua: String = "",
               val size: Long = 0L,
-              val asize: Long = 0L
+              val asize: Long = 0L,
+              val ytId: String = "",
+              val itag: Int = 0,
+              val aitag: Int = 0
           )
 
-          class Fmt(val url: String, val h: Int, val mime: String, val codecs: String, val br: Long, val size: Long, val fps: Int)
+          class Fmt(val url: String, val h: Int, val mime: String, val codecs: String, val br: Long, val size: Long, val fps: Int, val itag: Int = 0)
 
           class AuthFail(code: Int) : IOException("Instagram refused the request (HTTP $code)")
 
@@ -193,9 +249,7 @@ jobs:
               private var loginSite = ""
               private var fbLast = 0
               private var fbStall = 0
-              private var ttApiTried = false
-              @Volatile private var ttClips: Map<Int, String>? = null
-              private var ttNote = ""
+              private var vetting = false
               private val netVideos = ArrayList<String>()
 
               private val UA = "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36"
@@ -519,9 +573,7 @@ jobs:
                   thEmbedTried = false
                   fbLast = 0
                   fbStall = 0
-                  ttApiTried = false
-                  ttClips = null
-                  ttNote = ""
+                  vetting = false
                   synchronized(netVideos) { netVideos.clear() }
                   synchronized(captured) { captured.clear(); seen.clear() }
                   plat = platformOf(link)
@@ -713,22 +765,8 @@ jobs:
                           if (id.isNotEmpty()) found = parseTT(docs, id)
                           if (found.isEmpty() && tick >= 10) found = parseTT(docs, "")
                           if (found.isNotEmpty() && found.none { it.video }) {
-                              // photo post: ask the TikTok app API for live photo clips and watch the page traffic
-                              if (!ttApiTried && id.isNotEmpty()) {
-                                  ttApiTried = true
-                                  Thread {
-                                      try {
-                                          val r = ttApi(id)
-                                          ttNote = "app API clips=${r.size}"
-                                          ttClips = r
-                                      } catch (e: Exception) {
-                                          ttNote = "app API: ${(e.message ?: e.javaClass.simpleName).take(40)}"
-                                          ttClips = emptyMap()
-                                      }
-                                  }.start()
-                              }
-                              found = if (tick < 6 || (ttClips == null && tick < 12)) emptyList() else withClips(withNet(found))
-                              if (found.isNotEmpty() && ttNote.isNotEmpty()) diag = (diag + " | " + ttNote).trim(' ', '|')
+                              // photo post: watch the page traffic for a few seconds in case live photo clips load
+                              found = if (tick < 5) emptyList() else withNet(found)
                           }
                       }
                       "th", "ig" -> {
@@ -737,6 +775,10 @@ jobs:
                           if (code.isNotEmpty() || (plat == "th" && tick >= 12)) {
                               found = parseTh(docs, code)
                               if (found.isEmpty() && plat == "th" && tick >= 20 && code.isNotEmpty()) found = parseTh(docs, "")
+                              if (found.isNotEmpty() && found.any { it.video } && !vetting) {
+                                  vetThen(my, found)
+                                  return
+                              }
                           }
                       }
                       "fb" -> if (tick >= 2) {
@@ -815,42 +857,6 @@ jobs:
               private fun kinds(docs: List<String>): String =
                   listOf("image_versions2", "video_versions", "carousel_media", "itemStruct", "viewer_image")
                       .joinToString(",") { k -> "$k=${docs.count { it.contains(k) }}" }
-
-              private fun rnd(n: Int): String {
-                  val r = java.util.Random()
-                  val sb = StringBuilder()
-                  for (i in 0 until n) sb.append(if (i == 0) 1 + r.nextInt(9) else r.nextInt(10))
-                  return sb.toString()
-              }
-
-              // live photo clips are only listed by the TikTok app API, not by the web page
-              private fun ttApi(id: String): Map<Int, String> {
-                  val q = "aweme_id=$id&iid=${rnd(19)}&device_id=${rnd(19)}&ac=wifi&channel=googleplay&aid=1180&app_name=musical_ly" +
-                      "&version_code=350103&version_name=35.1.3&device_platform=android&os=android&ab_version=35.1.3&ssmix=a" +
-                      "&device_type=Pixel+7&device_brand=google&language=en&os_api=33&os_version=13&manifest_version_code=2023501030" +
-                      "&resolution=1080*2400&dpi=420&sys_region=US&carrier_region=US&app_language=en&timezone_name=America%2FNew_York" +
-                      "&timezone_offset=-18000&locale=en&region=US&build_number=35.1.3&ts=${System.currentTimeMillis() / 1000}"
-                  val ua = "com.zhiliaoapp.musically/2023501030 (Linux; U; Android 13; en_US; Pixel 7; Build/TD1A.220804.031; Cronet/58.0.2991.0)"
-                  val body = open("https://api22-normal-c-alisg.tiktokv.com/aweme/v1/feed/?$q", "", ua).inputStream.bufferedReader().readText()
-                  val item = JSONObject(body).optJSONArray("aweme_list")?.optJSONObject(0)
-                  val out = HashMap<Int, String>()
-                  if (item == null || item.optString("aweme_id") != id) return out
-                  val imgs = item.optJSONObject("image_post_info")?.optJSONArray("images") ?: return out
-                  for (i in 0 until imgs.length()) {
-                      val vs = videoUrls(imgs.optJSONObject(i), emptySet())
-                      if (vs.isNotEmpty()) out[i] = vs[0]
-                  }
-                  return out
-              }
-
-              private fun withClips(found: List<Media>): List<Media> {
-                  val m = ttClips
-                  if (m == null || m.isEmpty()) return found
-                  return found.mapIndexed { i, x ->
-                      val u = m[i]
-                      if (u != null && !x.video) Media(u, true, x.thumb, "https://www.tiktok.com/", live = true) else x
-                  }
-              }
 
               private fun withNet(found: List<Media>): List<Media> {
                   val net = synchronized(netVideos) { ArrayList(netVideos) }
@@ -955,7 +961,7 @@ jobs:
                           }
                       }
                       if (live == 0) {
-                          diag = "TikTok photo info -> post: ${keyList(ip)} | image: ${keyList(imgs.optJSONObject(0))} | item: ${keyList(item)} | video-like links: ${videoUrls(item, setOf("music")).size}"
+                          diag = "TikTok's web page lists photos only. If this post has live photos, their clips are not included in the web data."
                       }
                       return out
                   }
@@ -1021,10 +1027,75 @@ jobs:
               private fun oneTh(o: JSONObject?): Media? {
                   if (o == null) return null
                   val thumb = best(o.optJSONObject("image_versions2")?.optJSONArray("candidates")) ?: ""
-                  val vid = best(o.optJSONArray("video_versions"), true)
-                  return if (vid != null) Media(vid, true, thumb)
+                  val vids = cands(o.optJSONArray("video_versions"))
+                  return if (vids.isNotEmpty()) Media(vids[0], true, thumb, alts = vids.drop(1))
                   else if (thumb.isNotEmpty()) Media(thumb, false, thumb)
                   else null
+              }
+
+              // all video links of a post, biggest picture first (entries without a picture size are usually audio only)
+              private fun cands(a: JSONArray?): List<String> {
+                  if (a == null) return emptyList()
+                  val l = ArrayList<Pair<Long, String>>()
+                  for (i in 0 until a.length()) {
+                      val o = a.optJSONObject(i) ?: continue
+                      val u = o.optString("url")
+                      if (u.isEmpty()) continue
+                      l.add(Pair(o.optLong("width") * o.optLong("height"), u))
+                  }
+                  return l.sortedByDescending { it.first }.map { it.second }
+              }
+
+              private fun kindOf(h: ByteArray, n: Int): String {
+                  if (n >= 3 && h[0] == 'I'.code.toByte() && h[1] == 'D'.code.toByte() && h[2] == '3'.code.toByte()) return "audio"
+                  if (n >= 2 && (h[0].toInt() and 0xFF) == 0xFF && (h[1].toInt() and 0xE0) == 0xE0) return "audio"
+                  if (n >= 12 && String(h, 4, 4) == "ftyp" && String(h, 8, 4) == "M4A ") return "audio"
+                  return "other"
+              }
+
+              // read the first bytes of a file to see what it really is
+              private fun sniff(u: String, ref: String): String {
+                  val c = open(u, ref)
+                  c.setRequestProperty("Range", "bytes=0-15")
+                  val h = ByteArray(16)
+                  var n = 0
+                  try {
+                      c.inputStream.use { i ->
+                          while (n < 16) {
+                              val r = i.read(h, n, 16 - n)
+                              if (r < 0) break
+                              n += r
+                          }
+                      }
+                  } finally {
+                      c.disconnect()
+                  }
+                  return kindOf(h, n)
+              }
+
+              // Threads / Instagram: make sure every "video" really is a video (not an audio file) before showing it
+              private fun vetThen(my: Int, found: List<Media>) {
+                  vetting = true
+                  pollStop = true
+                  say("Checking files…")
+                  Thread {
+                      val good = ArrayList<Media>()
+                      for (m in found) {
+                          if (!m.video) { good.add(m); continue }
+                          var pick: String? = null
+                          for (u in (listOf(m.url) + m.alts).distinct()) {
+                              val k = try { sniff(u, m.ref) } catch (e: Exception) { "other" }
+                              if (k != "audio") { pick = u; break }
+                          }
+                          if (pick != null) good.add(Media(pick, true, m.thumb, m.ref))
+                      }
+                      runOnUiThread {
+                          if (my == gen) {
+                              if (good.isEmpty()) fail(my, "This post has no photo or video of its own (only sound or a link preview), so there is nothing to download.")
+                              else show(good)
+                          }
+                      }
+                  }.start()
               }
 
               private fun best(a: JSONArray?, needSize: Boolean = false): String? {
@@ -1211,39 +1282,42 @@ jobs:
                   Regex("\"(?:VISITOR_DATA|visitorData)\":\"([^\"]+)\"").find(h)?.groupValues?.get(1) ?: ""
               } catch (e: Exception) { "" }
 
+              private fun ytPlayer(id: String, c: YC, visitor: String): JSONObject {
+                  val client = JSONObject().put("clientName", c.name).put("clientVersion", c.ver).put("hl", "en").put("gl", "US")
+                      .put("userAgent", c.ua)
+                  if (c.android) client.put("deviceMake", "Oculus").put("deviceModel", "Quest 3")
+                      .put("androidSdkVersion", 32).put("osName", "Android").put("osVersion", "12L")
+                  if (visitor.isNotEmpty()) client.put("visitorData", visitor)
+                  val ctx = JSONObject().put("client", client)
+                  if (c.embed) ctx.put("thirdParty", JSONObject().put("embedUrl", "https://www.youtube.com/watch?v=$id"))
+                  val body = JSONObject().put("context", ctx)
+                      .put("videoId", id).put("contentCheckOk", true).put("racyCheckOk", true)
+                  val u = URL("https://www.youtube.com/youtubei/v1/player?prettyPrint=false").openConnection() as HttpURLConnection
+                  u.requestMethod = "POST"
+                  u.doOutput = true
+                  u.setRequestProperty("Content-Type", "application/json")
+                  u.setRequestProperty("User-Agent", c.ua)
+                  u.setRequestProperty("X-YouTube-Client-Name", c.id)
+                  u.setRequestProperty("X-YouTube-Client-Version", c.ver)
+                  u.setRequestProperty("Origin", "https://www.youtube.com")
+                  if (visitor.isNotEmpty()) u.setRequestProperty("X-Goog-Visitor-Id", visitor)
+                  u.connectTimeout = 20000
+                  u.readTimeout = 30000
+                  u.outputStream.use { it.write(body.toString().toByteArray()) }
+                  val text = try {
+                      u.inputStream.bufferedReader().readText()
+                  } catch (e: Exception) {
+                      throw IOException("HTTP ${u.responseCode}")
+                  }
+                  return JSONObject(text)
+              }
+
               private fun ytFetch(id: String): Pair<List<Media>, String> {
                   var reason = ""
                   val visitor = visitorId()
                   for (c in YT) {
                       try {
-                          val client = JSONObject().put("clientName", c.name).put("clientVersion", c.ver).put("hl", "en").put("gl", "US")
-                              .put("userAgent", c.ua)
-                          if (c.android) client.put("deviceMake", "Oculus").put("deviceModel", "Quest 3")
-                              .put("androidSdkVersion", 32).put("osName", "Android").put("osVersion", "12L")
-                          if (visitor.isNotEmpty()) client.put("visitorData", visitor)
-                          val ctx = JSONObject().put("client", client)
-                          if (c.embed) ctx.put("thirdParty", JSONObject().put("embedUrl", "https://www.youtube.com/watch?v=$id"))
-                          val body = JSONObject().put("context", ctx)
-                              .put("videoId", id).put("contentCheckOk", true).put("racyCheckOk", true)
-                          val u = URL("https://www.youtube.com/youtubei/v1/player?prettyPrint=false").openConnection() as HttpURLConnection
-                          u.requestMethod = "POST"
-                          u.doOutput = true
-                          u.setRequestProperty("Content-Type", "application/json")
-                          u.setRequestProperty("User-Agent", c.ua)
-                          u.setRequestProperty("X-YouTube-Client-Name", c.id)
-                          u.setRequestProperty("X-YouTube-Client-Version", c.ver)
-                          u.setRequestProperty("Origin", "https://www.youtube.com")
-                          if (visitor.isNotEmpty()) u.setRequestProperty("X-Goog-Visitor-Id", visitor)
-                          u.connectTimeout = 20000
-                          u.readTimeout = 30000
-                          u.outputStream.use { it.write(body.toString().toByteArray()) }
-                          val text = try {
-                              u.inputStream.bufferedReader().readText()
-                          } catch (e: Exception) {
-                              if (reason.isEmpty()) reason = "HTTP ${u.responseCode}"
-                              continue
-                          }
-                          val j = JSONObject(text)
+                          val j = ytPlayer(id, c, visitor)
                           val sd = j.optJSONObject("streamingData")
                           if (sd == null) {
                               if (reason.isEmpty()) reason = j.optJSONObject("playabilityStatus")?.optString("reason") ?: "no streams"
@@ -1257,6 +1331,31 @@ jobs:
                       }
                   }
                   throw IOException((if (reason.isEmpty()) "video unavailable" else reason) + " (all ${YT.size} methods failed)")
+              }
+
+              // the same file (same format number and size) as offered through every other YouTube route
+              private fun ytSources(id: String, itag: Int, size: Long, skip: String): List<Pair<String, String>> {
+                  val out = ArrayList<Pair<String, String>>()
+                  val visitor = visitorId()
+                  for (c in YT) {
+                      try {
+                          val sd = ytPlayer(id, c, visitor).optJSONObject("streamingData") ?: continue
+                          for (pass in 0..1) {
+                              val a = sd.optJSONArray(if (pass == 0) "formats" else "adaptiveFormats") ?: continue
+                              for (i in 0 until a.length()) {
+                                  val o = a.optJSONObject(i) ?: continue
+                                  if (o.optInt("itag") != itag) continue
+                                  val u = o.optString("url")
+                                  if (u.isEmpty() || u == skip) continue
+                                  val cl = o.optString("contentLength").toLongOrNull() ?: 0L
+                                  if (size > 0 && cl != size) continue
+                                  out.add(Pair(u, c.ua))
+                              }
+                          }
+                      } catch (e: Exception) {
+                      }
+                  }
+                  return out
               }
 
               private fun mb(b: Long): String = if (b > 0) " · ${b / 1048576} MB" else ""
@@ -1277,7 +1376,7 @@ jobs:
                           val mime = mt.substringBefore(";").trim()
                           val codecs = mt.substringAfter("codecs=\"", "").substringBefore("\"")
                           val f = Fmt(u, o.optInt("height"), mime, codecs, o.optLong("bitrate"),
-                              o.optString("contentLength").toLongOrNull() ?: 0L, o.optInt("fps"))
+                              o.optString("contentLength").toLongOrNull() ?: 0L, o.optInt("fps"), o.optInt("itag"))
                           if (pass == 0) {
                               if (mime == "video/mp4") prog.add(f)
                           } else if (mime == "video/mp4" && codecs.startsWith("avc1")) {
@@ -1303,15 +1402,15 @@ jobs:
                       val w = vweb.filter { it.h == h }.maxByOrNull { it.br }
                       if (m != null && am != null) {
                           res.add(Pair(h, Media(m.url, true, thumb, audio = am.url, label = "${h}p${if (m.fps > 30) m.fps.toString() else ""} · MP4${mb(m.size + am.size)}",
-                              ua = ua, size = m.size, asize = am.size)))
+                              ua = ua, size = m.size, asize = am.size, ytId = id, itag = m.itag, aitag = am.itag)))
                       } else if (w != null && aw != null) {
                           res.add(Pair(h, Media(w.url, true, thumb, audio = aw.url, webm = true, label = "${h}p${if (w.fps > 30) w.fps.toString() else ""} · WebM${mb(w.size + aw.size)}",
-                              ua = ua, size = w.size, asize = aw.size)))
+                              ua = ua, size = w.size, asize = aw.size, ytId = id, itag = w.itag, aitag = aw.itag)))
                       }
                   }
                   for (p in prog) {
                       if (p.h in heights && res.isNotEmpty()) continue
-                      res.add(Pair(p.h, Media(p.url, true, thumb, label = "${p.h}p · MP4 (with sound)${mb(p.size)}", ua = ua, size = p.size)))
+                      res.add(Pair(p.h, Media(p.url, true, thumb, label = "${p.h}p · MP4 (with sound)${mb(p.size)}", ua = ua, size = p.size, ytId = id, itag = p.itag)))
                   }
                   return res.sortedByDescending { it.first }.map { it.second }
               }
@@ -1535,11 +1634,21 @@ jobs:
                   val item = newItem("easydl_${System.currentTimeMillis()}_$n.$ext", mime, m.video)
                   try {
                       contentResolver.openOutputStream(item.first)!!.use { o ->
-                          if (m.ua.isNotEmpty()) fetchChunks(url, o, m.ua, m.size, "Video")
+                          if (m.ua.isNotEmpty()) fetchChunks(url, o, m.ua, m.size, "Video", m.ytId, m.itag)
                           else {
                               val c = open(url, m.ref)
-                              if (m.video && (c.contentType ?: "").startsWith("audio")) throw IOException("This file is audio only, not a video")
-                              c.inputStream.use { it.copyTo(o) }
+                              c.inputStream.use { i ->
+                                  val head = ByteArray(16)
+                                  var n = 0
+                                  while (n < 16) {
+                                      val r = i.read(head, n, 16 - n)
+                                      if (r < 0) break
+                                      n += r
+                                  }
+                                  if (m.video && kindOf(head, n) == "audio") throw IOException("This file is audio only, not a video")
+                                  o.write(head, 0, n)
+                                  i.copyTo(o)
+                              }
                           }
                       }
                   } catch (e: Exception) {
@@ -1567,54 +1676,77 @@ jobs:
                   writeBytes(readAll(pickBest(m), m.ref), "easydl_live_${System.currentTimeMillis()}_$n.mp4", "video/mp4", true)
               }
 
-              // download in pieces (YouTube slows down or blocks one huge request); every piece is retried in other ways
-              private fun fetchChunks(url: String, out: OutputStream, ua: String, size: Long, label: String) {
+              private class Cur(var pos: Long = 0L, var pct: Int = -1)
+
+              private fun pull(url: String, ua: String, endv: Long, useParam: Boolean, out: OutputStream, buf: ByteArray, st: Cur, size: Long, label: String) {
+                  val start = st.pos
+                  val u = if (useParam) "$url&range=$start-$endv" else url
+                  val c = open(u, "https://www.youtube.com/", ua)
+                  c.setRequestProperty("Origin", "https://www.youtube.com")
+                  if (!useParam) c.setRequestProperty("Range", "bytes=$start-$endv")
+                  val code = c.responseCode
+                  if (code >= 400) { c.disconnect(); throw IOException("HTTP $code") }
+                  if (!useParam && code == 200 && start > 0) { c.disconnect(); throw IOException("range ignored") }
+                  var got = 0L
+                  c.inputStream.use { i ->
+                      var r = i.read(buf)
+                      while (r >= 0) {
+                          out.write(buf, 0, r)
+                          got += r
+                          st.pos += r
+                          val pct = (st.pos * 100 / size).toInt()
+                          if (pct != st.pct) { st.pct = pct; say("$label $pct%") }
+                          if (st.pos > endv) break
+                          r = i.read(buf)
+                      }
+                  }
+                  if (got == 0L) throw IOException("empty")
+              }
+
+              // download in pieces; when YouTube blocks a piece, resume from the same spot through another YouTube route
+              private fun fetchChunks(url0: String, out: OutputStream, ua0: String, size: Long, label: String, id: String, itag: Int) {
                   val buf = ByteArray(65536)
                   if (size <= 0) {
-                      val c = open(url, "", ua)
+                      val c = open(url0, "", ua0)
                       c.inputStream.use { i ->
                           var r = i.read(buf)
                           while (r >= 0) { out.write(buf, 0, r); r = i.read(buf) }
                       }
                       return
                   }
-                  var pos = 0L
-                  var lastPct = -1
-                  while (pos < size) {
+                  val srcs = ArrayList<Pair<String, String>>()
+                  srcs.add(Pair(url0, ua0))
+                  var expanded = false
+                  var cur = 0
+                  val st = Cur()
+                  while (st.pos < size) {
                       var ok = false
                       var why = ""
-                      for (variant in 0..3) {
-                          val len = if (variant >= 2) 1048576L else 9437184L
-                          val endv = minOf(pos + len, size) - 1
-                          val useParam = variant == 1 || variant == 3
-                          val u = if (useParam) "$url&range=$pos-$endv" else url
-                          try {
-                              val c = open(u, "https://www.youtube.com/", ua)
-                              c.setRequestProperty("Origin", "https://www.youtube.com")
-                              if (!useParam) c.setRequestProperty("Range", "bytes=$pos-$endv")
-                              val code = c.responseCode
-                              if (code >= 400) { why = "HTTP $code"; c.disconnect(); continue }
-                              if (!useParam && code == 200 && pos > 0) { why = "range ignored"; c.disconnect(); continue }
-                              var got = 0L
-                              c.inputStream.use { i ->
-                                  var r = i.read(buf)
-                                  while (r >= 0) {
-                                      out.write(buf, 0, r)
-                                      got += r
-                                      pos += r
-                                      val pct = (pos * 100 / size).toInt()
-                                      if (pct != lastPct) { lastPct = pct; say("$label $pct%") }
-                                      r = i.read(buf)
-                                  }
-                              }
-                              if (got == 0L) { why = "empty"; continue }
-                              ok = true
-                              break
-                          } catch (e: IOException) {
-                              why = "network error"
+                      var idx = cur
+                      while (!ok) {
+                          if (idx >= srcs.size) {
+                              if (expanded || id.isEmpty() || itag <= 0) break
+                              expanded = true
+                              say("$label: trying another YouTube route…")
+                              srcs.addAll(ytSources(id, itag, size, url0))
+                              if (idx >= srcs.size) break
                           }
+                          val s = srcs[idx]
+                          for (variant in 0..1) {
+                              val len = if (variant == 0) 9437184L else 1048576L
+                              val endv = minOf(st.pos + len, size) - 1
+                              try {
+                                  pull(s.first, s.second, endv, variant == 1, out, buf, st, size, label)
+                                  ok = true
+                                  break
+                              } catch (e: IOException) {
+                                  why = e.message ?: "network error"
+                                  if (st.pos >= size) { ok = true; break }
+                              }
+                          }
+                          if (ok) cur = idx else idx++
                       }
-                      if (!ok) throw IOException("YouTube stopped the download at ${maxOf(lastPct, 0)}% ($why)")
+                      if (!ok) throw IOException("YouTube stopped the download at ${maxOf(st.pct, 0)}% ($why)")
                   }
               }
 
@@ -1622,8 +1754,8 @@ jobs:
                   val vf = File(cacheDir, "v_${System.nanoTime()}.bin")
                   val af = File(cacheDir, "a_${System.nanoTime()}.bin")
                   try {
-                      vf.outputStream().use { fetchChunks(m.url, it, m.ua, m.size, "Video") }
-                      af.outputStream().use { fetchChunks(m.audio, it, m.ua, m.asize, "Audio") }
+                      vf.outputStream().use { fetchChunks(m.url, it, m.ua, m.size, "Video", m.ytId, m.itag) }
+                      af.outputStream().use { fetchChunks(m.audio, it, m.ua, m.asize, "Audio", m.ytId, m.aitag) }
                       say("Merging video and audio…")
                       val ext = if (m.webm) "webm" else "mp4"
                       val item = newItem("easydl_yt_${System.currentTimeMillis()}_$n.$ext", if (m.webm) "video/webm" else "video/mp4", true)
