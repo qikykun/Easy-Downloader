@@ -52,8 +52,8 @@ jobs:
               applicationId 'com.pribadi.easydl'
               minSdk 29
               targetSdk 34
-              versionCode 12
-              versionName '4.8'
+              versionCode 13
+              versionName '4.9'
             }
             compileOptions {
               sourceCompatibility JavaVersion.VERSION_17
@@ -224,6 +224,9 @@ jobs:
               private lateinit var loginHost: LinearLayout
               private lateinit var loginBox: FrameLayout
               private lateinit var loginTitle: TextView
+              private lateinit var webHost: LinearLayout
+              private lateinit var webBox: FrameLayout
+              private lateinit var webStatus: TextView
               private var web: WebView? = null
               private var loginWeb: WebView? = null
               private var anim: ValueAnimator? = null
@@ -302,7 +305,21 @@ jobs:
                   "creativecdn", "adform", "mgid", "revcontent", "adcash", "bidvertiser", "admaven", "ad-maven", "popunder", "/ads/", "adserver",
                   "adservice", "pagead", "syndication.", "trafficstars", "tsyndicate", "ero-advertising", "adskeeper", "yllix", "clickaine", "adspyglass")
 
+              // catches stream lists (m3u8) that players load in the background, even without a file name
+              private val GEN_HOOK = """(function(){if(window.__g)return;window.__g=1;
+          var chk=function(u,t){try{if(t&&t.replace(/^\uFEFF/,'').trim().indexOf('#EXTM3U')==0)B.v(u,location.href)}catch(e){}};
+          var f=window.fetch;
+          if(f){window.fetch=function(){return f.apply(this,arguments).then(function(r){try{var u=r.url;var ct=(r.headers.get('content-type')||'').toLowerCase();if(ct.indexOf('video')<0&&ct.indexOf('octet')<0&&ct.indexOf('image')<0&&ct.indexOf('audio')<0)r.clone().text().then(function(t){chk(u,t)})}catch(e){}return r})}}
+          var op=XMLHttpRequest.prototype.open;
+          XMLHttpRequest.prototype.open=function(m,u){this.__u=u;return op.apply(this,arguments)};
+          var sd=XMLHttpRequest.prototype.send;
+          XMLHttpRequest.prototype.send=function(){this.addEventListener('load',function(){try{if(this.responseType==''||this.responseType=='text')chk(this.responseURL||this.__u,this.responseText)}catch(e){}});return sd.apply(this,arguments)};
+          })();"""
+
               private val GEN_JS = """(function(){
+          try{var all=document.querySelectorAll('body *');for(var z=0;z<all.length&&z<3000;z++){var el=all[z];var tx=(el.innerText||'').toLowerCase();
+          if(tx.length<300&&/(click allow|not a robot|press allow|e-captcha|allow notifications)/.test(tx)){var p=el;while(p&&p!=document.body){var cs=getComputedStyle(p);if(cs.position=='fixed'||cs.position=='absolute'){p.remove();break}p=p.parentElement}}}
+          var top=document.querySelectorAll('body > *');for(var y=0;y<top.length;y++){var c2=getComputedStyle(top[y]);if(c2.position=='fixed'&&parseInt(c2.zIndex||'0')>=10000&&!top[y].querySelector('video'))top[y].remove()}}catch(x){}
           var send=function(u){try{if(u&&u.indexOf('http')==0)B.v(u,location.href)}catch(e){}};
           var vs=document.querySelectorAll('video,source');
           for(var i=0;i<vs.length;i++){var e=vs[i];send(e.currentSrc);send(e.src);try{if(e.tagName=='VIDEO'){e.muted=true;var p=e.play();if(p&&p.catch)p.catch(function(){})}}catch(x){}}
@@ -310,7 +327,7 @@ jobs:
           var m=h.match(/https?:\/\/[^"'\s\\<>()]+?\.(?:mp4|m3u8|webm|mkv)(?:\?[^"'\s\\<>()]*)?/g);
           if(m)for(var j=0;j<m.length&&j<40;j++)send(m[j]);
           var bt=document.querySelectorAll('button,a,div[role=button],input[type=button],input[type=submit],span');
-          for(var k=0;k<bt.length&&k<400;k++){var t=(bt[k].innerText||bt[k].value||'').trim().toLowerCase();if(t.length>0&&t.length<40&&/(turned it off|i('| a)?m human|not a robot|click to play|tap to play|watch now|play video|continue|download|unduh|get link|generate|proceed)/.test(t)&&!/(app|apk|install|extension|vpn|premium|register|sign|login|upgrade)/.test(t)){try{bt[k].click()}catch(x){}}}
+          for(var k=0;k<bt.length&&k<400;k++){var t=(bt[k].innerText||bt[k].value||'').trim().toLowerCase();if(t.length>0&&t.length<40&&/(turned it off|i('| a)?m human|not a robot|click to play|tap to play|watch now|play video|continue to video|download|unduh|get link|generate|proceed)/.test(t)&&!/(app|apk|install|extension|vpn|premium|register|sign|login|upgrade)/.test(t)){try{bt[k].click()}catch(x){}}}
           var pl=document.querySelectorAll('.vjs-big-play-button,.jw-icon-display,.plyr__control--overlaid,.play-button,[class*=big-play],[aria-label=Play],[title=Play]');
           for(var q=0;q<pl.length;q++){try{pl[q].click()}catch(x){}}
           })();"""
@@ -362,7 +379,7 @@ jobs:
                       }
                   })
                   status = TextView(this).apply {
-                      text = "Easy Downloader 4.8\nCopy a video link from any website (Threads, X, TikTok, Facebook, Instagram, YouTube or others), then open this app. You can also paste it in the box above."
+                      text = "Easy Downloader 4.9\nCopy a video link from any website (Threads, X, TikTok, Facebook, Instagram, YouTube or others), then open this app. You can also paste it in the box above."
                       setPadding(0, dp(8), 0, dp(8))
                   }
                   list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -454,6 +471,34 @@ jobs:
                   root.addView(content, FrameLayout.LayoutParams(-1, -1))
                   root.addView(loader, FrameLayout.LayoutParams(-1, -1))
                   root.addView(loginHost, FrameLayout.LayoutParams(-1, -1))
+
+                  // built-in browser for other websites (ads blocked); the video is caught while it plays
+                  webStatus = TextView(this).apply {
+                      setPadding(dp(16), dp(10), dp(16), dp(10))
+                      setTextColor(Color.WHITE)
+                      setBackgroundColor(Color.rgb(46, 160, 67))
+                  }
+                  webBox = FrameLayout(this)
+                  webHost = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      visibility = View.GONE
+                      setBackgroundColor(Color.WHITE)
+                      setPadding(0, dp(32), 0, 0)
+                      addView(LinearLayout(this@MainActivity).apply {
+                          gravity = Gravity.CENTER_VERTICAL
+                          addView(TextView(this@MainActivity).apply {
+                              text = "No-ads browser"
+                              setPadding(dp(16), dp(12), dp(8), dp(12))
+                          }, LinearLayout.LayoutParams(0, -2, 1f))
+                          addView(Button(this@MainActivity).apply {
+                              text = "Close"
+                              setOnClickListener { cancelWeb() }
+                          })
+                      }, LinearLayout.LayoutParams(-1, -2))
+                      addView(webBox, LinearLayout.LayoutParams(-1, 0, 1f))
+                      addView(webStatus, LinearLayout.LayoutParams(-1, -2))
+                  }
+                  root.addView(webHost, FrameLayout.LayoutParams(-1, -1))
                   setContentView(root)
                   if (savedInstanceState == null) handleShare(intent)
               }
@@ -465,7 +510,9 @@ jobs:
               }
 
               override fun onBackPressed() {
-                  if (loginHost.visibility == View.VISIBLE) finishLogin(false) else super.onBackPressed()
+                  if (loginHost.visibility == View.VISIBLE) finishLogin(false)
+                  else if (webHost.visibility == View.VISIBLE) cancelWeb()
+                  else super.onBackPressed()
               }
 
               private fun handleShare(i: Intent?) {
@@ -484,6 +531,7 @@ jobs:
                   super.onWindowFocusChanged(hasFocus)
                   if (!hasFocus || SystemClock.elapsedRealtime() < skipClipUntil) return
                   if (loginHost.visibility == View.VISIBLE) return
+                  if (webHost.visibility == View.VISIBLE) return
                   val cm = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
                   val text = cm.primaryClip?.takeIf { it.itemCount > 0 }
                       ?.getItemAt(0)?.coerceToText(this)?.toString() ?: return
@@ -495,6 +543,25 @@ jobs:
               private fun say(s: String) = runOnUiThread {
                   status.text = s
                   loaderText.text = s
+                  webStatus.text = s
+              }
+
+              private fun closeWeb() {
+                  if (webHost.visibility != View.VISIBLE) return
+                  webHost.visibility = View.GONE
+                  webBox.removeAllViews()
+                  web?.destroy()
+                  web = null
+              }
+
+              private fun cancelWeb() {
+                  gen++
+                  pollStop = true
+                  lastLink = ""
+                  closeWeb()
+                  busy(false)
+                  btn.isEnabled = true
+                  status.text = "Closed. Copy or paste a link to try again."
               }
 
               private fun fail(my: Int, s: String) = runOnUiThread {
@@ -502,6 +569,7 @@ jobs:
                       pollStop = true
                       lastLink = ""
                       busy(false)
+                      closeWeb()
                       status.text = s
                       btn.isEnabled = true
                   }
@@ -559,6 +627,7 @@ jobs:
 
               private fun newWeb(my: Int, ua: String, big: Boolean = false): WebView {
                   host.removeAllViews()
+                  webBox.removeAllViews()
                   web?.destroy()
                   val w = WebView(this)
                   w.settings.javaScriptEnabled = true
@@ -605,7 +674,9 @@ jobs:
                                   return android.webkit.WebResourceResponse("text/plain", "utf-8", java.io.ByteArrayInputStream(ByteArray(0)))
                               }
                               val gp = gl.substringBefore("?").substringBefore("#")
-                              if (gp.endsWith(".mp4") || gp.endsWith(".m3u8") || gp.endsWith(".webm") || gp.endsWith(".mkv") || gp.endsWith(".mov") || gp.endsWith(".m4v") || gl.contains("mime=video")) {
+                              val static = Regex("\\.(js|css|png|jpe?g|gif|svg|webp|ico|woff2?|ttf|otf|html?|php|json|xml|ts|m4s|aac|m4a|vtt|srt|key)$").containsMatchIn(gp)
+                              val hint = listOf("m3u8", "mpegurl", "playlist", "master", "manifest", "/hls", "video", "stream", "/media", "download", "/file").any { gp.contains(it) }
+                              if (gp.endsWith(".mp4") || gp.endsWith(".m3u8") || gp.endsWith(".webm") || gp.endsWith(".mkv") || gp.endsWith(".mov") || gp.endsWith(".m4v") || gl.contains("mime=video") || (hint && !static)) {
                                   synchronized(genUrls) {
                                       if (genUrls.size < 60 && genUrls.none { it == gu }) {
                                           genUrls.add(gu)
@@ -629,6 +700,7 @@ jobs:
 
                       override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
                           if (plat != "tt") view.evaluateJavascript(HOOK, null)
+                          if (plat == "gen") view.evaluateJavascript(GEN_HOOK, null)
                       }
 
                       override fun onPageFinished(view: WebView, url: String?) {
@@ -637,7 +709,11 @@ jobs:
                           if (plat != "tt") view.evaluateJavascript(HOOK, null)
                       }
                   }
-                  if (big) host.addView(w, FrameLayout.LayoutParams(dp(360), dp(640))) else host.addView(w, FrameLayout.LayoutParams(1, 1))
+                  if (big) {
+                      webBox.addView(w, FrameLayout.LayoutParams(-1, -1))
+                      webHost.visibility = View.VISIBLE
+                      busy(false)
+                  } else host.addView(w, FrameLayout.LayoutParams(1, 1))
                   web = w
                   return w
               }
@@ -657,6 +733,7 @@ jobs:
               }
 
               private fun start(link: String) {
+                  closeWeb()
                   lastLink = link
                   quiet = true
                   input.setText(link)
@@ -889,7 +966,8 @@ jobs:
                       }
                       "gen" -> {
                           w.evaluateJavascript(GEN_JS, null)
-                          if (tick >= 3 && tick % 3 == 0 && tick <= 45) tapCenter(w)
+                          w.evaluateJavascript(GEN_HOOK, null)
+                          if (tick >= 3 && tick % 3 == 0 && tick <= 12) tapCenter(w)
                           // every link found is checked first: only real video files count
                           val fresh = synchronized(genUrls) { genUrls.filter { it !in genChecked } }
                           if (fresh.isNotEmpty() && !genChecking) {
@@ -903,7 +981,7 @@ jobs:
                                   chooseGen(good)
                                   return
                               }
-                          } else if (tick % 5 == 0) say("Looking for the video… (${tick}s)")
+                          } else if (tick % 5 == 0 && tick < 60) say("Looking for the video… If it does not start, tap play. (ads are blocked)")
                       }
                       "th", "ig" -> {
                           val rx = if (plat == "th") "/(?:post|t)/([A-Za-z0-9_-]+)" else "/(?:p|reel|reels|tv)/([A-Za-z0-9_-]+)"
@@ -963,7 +1041,12 @@ jobs:
                   }
                   if (tick >= (if (plat == "gen") 60 else if (plat == "fb" && fbTotal > 0) 30 else 25)) {
                       if (plat == "gen") {
-                          fail(my, "No video found on this page (no ads were opened). If the site asks you to turn off VPN or WARP, turn it off and try again.")
+                          if (tick >= 600) {
+                              fail(my, "No video found on this page. If the site asks you to turn off VPN or WARP, turn it off and try again.")
+                              return
+                          }
+                          if (tick % 5 == 0) say("Tap play on the video. It downloads by itself once found. (ads are blocked)")
+                          handler.postDelayed({ poll(my, tick + 1) }, 1000)
                           return
                       }
                       if (plat == "th" && !thLoginDone && !hasCookie("https://www.threads.com", "sessionid=")) { showLogin("Threads", lastLink); return }
@@ -999,7 +1082,7 @@ jobs:
                       show(listOf(Media(link, true, "", originOf(link), hls = true)))
                       return
                   }
-                  say("Opening the page without ads… (up to 60 seconds)")
+                  say("Opening the page without ads…")
                   newWeb(my, UAD, true).loadUrl(link)
                   poll(my, 0)
               }
@@ -1064,6 +1147,8 @@ jobs:
                           for (u in list) {
                               if (my != gen) break
                               if (ADS.any { u.lowercase().contains(it) }) continue
+                              val lp = u.lowercase().substringBefore("?")
+                              if (Regex("\\.(ts|m4s|aac|m4a|vtt)$").containsMatchIn(lp) || Regex("(seg|segment|frag|chunk)[-_]?\\d").containsMatchIn(lp)) continue
                               val ref = genRef[u] ?: genPage
                               val r = try { probe(u, ref) } catch (e: Exception) { Pair("bad", -1L) }
                               if (r.first == "video" && (r.second < 0 || r.second >= 300000)) {
@@ -1085,7 +1170,7 @@ jobs:
                   val lists = good.filter { it.hls }
                   val f = files.maxByOrNull { it.size }
                   val l = lists.maxByOrNull { it.size }
-                  val pick = if (f != null && (l == null || f.size < 0 || f.size >= 1048576)) f else l ?: f
+                  val pick = if (f != null && (l == null || f.size >= 20L * 1048576)) f else l ?: f
                   if (pick != null) show(listOf(pick))
               }
 
@@ -1751,6 +1836,7 @@ jobs:
               private fun show(found: List<Media>) {
                   pollStop = true
                   busy(false)
+                  closeWeb()
                   ytMode = false
                   items.clear()
                   overlays.clear()
