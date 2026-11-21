@@ -52,8 +52,8 @@ jobs:
               applicationId 'com.pribadi.easydl'
               minSdk 29
               targetSdk 34
-              versionCode 30
-              versionName '6.6'
+              versionCode 31
+              versionName '6.7'
             }
             compileOptions {
               sourceCompatibility JavaVersion.VERSION_17
@@ -534,7 +534,7 @@ jobs:
                       }
                   })
                   status = TextView(this).apply {
-                      text = "Easy Downloader 6.6\nCopy a video link from any website (Threads, X, TikTok, Facebook, Instagram, YouTube or others), then open this app. You can also paste it in the box above.\nSwipe left to see your downloaded files."
+                      text = "Easy Downloader 6.7\nCopy a video link from any website (Threads, X, TikTok, Facebook, Instagram, YouTube or others), then open this app. You can also paste it in the box above.\nSwipe left to see your downloaded files."
                       setPadding(0, dp(8), 0, dp(8))
                   }
                   list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -2326,9 +2326,13 @@ jobs:
                           if (my == gen) {
                               if (sorted.isEmpty()) show(listOf(first))
                               else {
-                                  showYt(sorted, accText(parseSrc(srcName + "_000000000000")))
+                                  // ready-chosen: the sharpest H.265 file without watermark (same kind TikTok itself plays)
+                                  val nw = sorted.filter { it.label.contains("no watermark") }
+                                  val best = nw.filter { it.label.contains("H.265") && it.itag in 1..9999 }
+                                      .maxWithOrNull(compareBy<Media> { it.itag }.thenBy { it.size }) ?: nw.firstOrNull()
+                                  showYt(sorted, accText(parseSrc(srcName + "_000000000000")), if (best == null) 0 else sorted.indexOf(best))
                                   list.addView(TextView(this).apply {
-                                      text = "Bigger file = better picture. TikTok only gives some qualities to logged-in viewers."
+                                      text = "H.265 gives a sharper picture in a smaller file. TikTok only gives some qualities to logged-in viewers."
                                       setPadding(0, dp(12), 0, dp(4))
                                       setTextColor(subCol)
                                   })
@@ -3146,14 +3150,14 @@ jobs:
                   download()
               }
 
-              private fun showYt(opts: List<Media>, title: String) {
+              private fun showYt(opts: List<Media>, title: String, pick: Int = 0) {
                   busy(false)
                   items.clear()
                   items.addAll(opts)
                   overlays.clear()
                   chosen = BooleanArray(0)
                   ytMode = true
-                  ytSel = 0
+                  ytSel = if (pick in opts.indices) pick else 0
                   allBox.visibility = View.GONE
                   list.removeAllViews()
                   status.text = "Choose a quality, then tap Download."
@@ -3174,7 +3178,7 @@ jobs:
                       rg.addView(RadioButton(this).apply {
                           text = o.label
                           id = i + 1
-                          isChecked = i == 0
+                          isChecked = i == ytSel
                           setOnClickListener { ytSel = i }
                       })
                   }
