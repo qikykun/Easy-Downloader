@@ -52,8 +52,8 @@ jobs:
               applicationId 'com.pribadi.easydl'
               minSdk 29
               targetSdk 34
-              versionCode 27
-              versionName '6.3'
+              versionCode 28
+              versionName '6.4'
             }
             compileOptions {
               sourceCompatibility JavaVersion.VERSION_17
@@ -534,7 +534,7 @@ jobs:
                       }
                   })
                   status = TextView(this).apply {
-                      text = "Easy Downloader 6.3\nCopy a video link from any website (Threads, X, TikTok, Facebook, Instagram, YouTube or others), then open this app. You can also paste it in the box above.\nSwipe left to see your downloaded files."
+                      text = "Easy Downloader 6.4\nCopy a video link from any website (Threads, X, TikTok, Facebook, Instagram, YouTube or others), then open this app. You can also paste it in the box above.\nSwipe left to see your downloaded files."
                       setPadding(0, dp(8), 0, dp(8))
                   }
                   list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -1800,6 +1800,7 @@ jobs:
                   w.loadUrl(when (site) {
                       "Instagram" -> "https://www.instagram.com/accounts/login/"
                       "Threads" -> "https://www.threads.com/login"
+                      "TikTok" -> "https://www.tiktok.com/login"
                       else -> "https://m.facebook.com/login/"
                   })
                   loginHost.visibility = View.VISIBLE
@@ -2295,16 +2296,34 @@ jobs:
                           }
                       } catch (e: Exception) {
                       }
-                      // same picture size and format listed once (keep the bigger one)
-                      val seen = HashSet<String>()
-                      for (m in web0.sortedWith(compareByDescending<Media> { it.itag }.thenByDescending { it.size })) {
-                          if (seen.add(m.label.substringBefore(" · ", m.label) + m.label.contains("H.265"))) opts.add(m)
+                      opts.addAll(web0)
+                      // measure every option and show the real size; the same file is listed once
+                      val measured = ArrayList<Media>()
+                      val sizes = HashSet<Long>()
+                      for (m in opts) {
+                          val sz = try { sizeOf(if (m.url.contains("tikwm.com")) finalUrl(m.url) else m.url, m.ref) } catch (e: Exception) { -1L }
+                          val real = if (sz > 0) sz else m.size
+                          if (real > 0 && !sizes.add(real)) continue
+                          val base = m.label.replace(Regex(" · [0-9]+ MB"), "")
+                          val lab = if (real > 0) base.substringBefore(" · no watermark") + mb(real) + (if (base.contains("no watermark")) " · no watermark" else "") else base
+                          measured.add(Media(m.url, true, m.thumb, m.ref, alts = m.alts, size = real, itag = m.itag, label = lab))
                       }
-                      val sorted = opts.sortedWith(compareByDescending<Media> { it.itag >= 100000 }.thenByDescending { it.size })
+                      val sorted = measured.sortedByDescending { it.size }
                       runOnUiThread {
                           if (my == gen) {
                               if (sorted.isEmpty()) show(listOf(first))
-                              else showYt(sorted, accText(parseSrc(srcName + "_000000000000")) + (if (ttNote.isNotEmpty() && d0(sorted)) "\n(HD copy not available: $ttNote)" else ""))
+                              else {
+                                  showYt(sorted, accText(parseSrc(srcName + "_000000000000")))
+                                  list.addView(TextView(this).apply {
+                                      text = "Bigger file = better picture. TikTok only gives some qualities to logged-in viewers."
+                                      setPadding(0, dp(12), 0, dp(4))
+                                      setTextColor(subCol)
+                                  })
+                                  list.addView(Button(this).apply {
+                                      text = if (hasCookie("https://www.tiktok.com", "sessionid=")) "Logged in to TikTok ✓" else "Log in to TikTok for more qualities (once)"
+                                      setOnClickListener { showLogin("TikTok", page) }
+                                  })
+                              }
                           }
                       }
                   }.start()
@@ -2351,6 +2370,7 @@ jobs:
 
               // public TikTok helper service (the same kind other downloader apps use)
               @Volatile private var ttNote = ""
+              @Volatile private var igInfo = ""
               private val ttOpts = ArrayList<Media>()
 
               private fun ttCall(page: String): JSONObject {
@@ -2524,6 +2544,7 @@ jobs:
                   (h264 + other).sortedByDescending { it.first }.forEach { urls.add(it.second) }
                   // downloadAddr is the copy WITH the TikTok watermark: only used when nothing else exists
                   val wm = v.optString("downloadAddr").takeIf { it.startsWith("http") }
+                  if (wm != null) ttOpts.add(Media(wm, true, cov0, ref, itag = 50000, label = "With TikTok watermark"))
                   v.optString("playAddr").takeIf { it.startsWith("http") }?.let { urls.add(it) }
                   if (urls.isEmpty()) other.sortedByDescending { it.first }.forEach { urls.add(it.second) }
                   // newer TikTok pages keep the links in other places: take every video link inside the video data
@@ -2578,26 +2599,42 @@ jobs:
                   val vids = cands(o.optJSONArray("video_versions"))
                   val dash = dashPair(o.optString("video_dash_manifest"))
                   if (vids.isEmpty() && dash != null) return Media(dash.first, true, thumb, audio = dash.second, ua = UA, label = "dash")
-                  return if (vids.isNotEmpty()) Media(vids[0], true, thumb, alts = vids.drop(1) + (if (dash != null) listOf(dash.first, dash.second) else emptyList()))
+                  val reps = dashReps(o.optString("video_dash_manifest"))
+                  val extra = reps.sortedWith(compareBy<Rep> { it.audio }.thenByDescending { it.bw }).map { it.url }
+                  return if (vids.isNotEmpty()) Media(vids[0], true, thumb, alts = vids.drop(1) + extra)
                   else if (thumb.isNotEmpty()) Media(thumb, false, thumb)
                   else null
               }
 
               // DASH list (picture and sound in separate files): best picture + best sound
-              private fun dashPair(xml: String): Pair<String, String>? {
-                  if (xml.isEmpty() || !xml.contains("<Representation")) return null
-                  var bv = ""; var bvBw = -1L; var ba = ""; var baBw = -1L
+              private class Rep(val url: String, val audio: Boolean, val codec: String, val bw: Long)
+
+              private fun dashReps(xml: String): List<Rep> {
+                  val out = ArrayList<Rep>()
+                  if (xml.isEmpty() || !xml.contains("<Representation")) return out
                   for (m in Regex("<Representation([^>]*)>(.*?)</Representation>", RegexOption.DOT_MATCHES_ALL).findAll(xml)) {
                       val at = m.groupValues[1]
                       val url = Regex("<BaseURL>(.*?)</BaseURL>", RegexOption.DOT_MATCHES_ALL).find(m.groupValues[2])?.groupValues?.get(1)
                           ?.replace("&amp;", "&")?.trim() ?: continue
                       val bw = Regex("bandwidth=\"(\\d+)\"").find(at)?.groupValues?.get(1)?.toLongOrNull() ?: 0L
+                      val set = xml.substring(0, m.range.first).substringAfterLast("<AdaptationSet")
                       val mime = Regex("mimeType=\"([^\"]+)\"").find(at)?.groupValues?.get(1)
-                          ?: Regex("mimeType=\"([^\"]+)\"").find(xml.substring(0, m.range.first).substringAfterLast("<AdaptationSet"))?.groupValues?.get(1) ?: ""
-                      if (mime.startsWith("audio")) { if (bw > baBw) { baBw = bw; ba = url } }
-                      else if (mime.startsWith("video")) { if (bw > bvBw) { bvBw = bw; bv = url } }
+                          ?: Regex("mimeType=\"([^\"]+)\"").find(set)?.groupValues?.get(1)
+                          ?: Regex("contentType=\"([^\"]+)\"").find(set)?.groupValues?.get(1) ?: ""
+                      val codec = Regex("codecs=\"([^\"]+)\"").find(at)?.groupValues?.get(1) ?: Regex("codecs=\"([^\"]+)\"").find(set)?.groupValues?.get(1) ?: ""
+                      if (mime.startsWith("audio") || mime.startsWith("video")) out.add(Rep(url, mime.startsWith("audio"), codec, bw))
                   }
-                  return if (bv.isNotEmpty() && ba.isNotEmpty()) Pair(bv, ba) else null
+                  return out
+              }
+
+              // best picture (H.264/H.265 first, because those join into MP4 everywhere) + best sound
+              private fun dashPair(xml: String): Pair<String, String>? {
+                  val r = dashReps(xml)
+                  val a = r.filter { it.audio }.maxByOrNull { it.bw } ?: return null
+                  val vs = r.filter { !it.audio }
+                  val v = vs.filter { it.codec.startsWith("avc") || it.codec.startsWith("hvc") || it.codec.startsWith("hev") }.maxByOrNull { it.bw }
+                      ?: vs.maxByOrNull { it.bw } ?: return null
+                  return Pair(v.url, a.url)
               }
 
               // all video links of a post, biggest picture first (entries without a picture size are usually audio only)
@@ -2718,11 +2755,16 @@ jobs:
                           // VP9 / AV1 pictures cannot be joined into an MP4 on most phones: use H.264 / H.265 ones
                           val okc = setOf("", "avc1", "avc3", "hvc1", "hev1")
                           val vOnly = tr.filter { it.v && !it.a && it.known && it.codec in okc }.maxByOrNull { it.size }
+                          val vAny = tr.filter { it.v && !it.a && it.known }.maxByOrNull { it.size }
                           val aOnly = tr.filter { !it.v && it.a }.maxByOrNull { it.size }
+                          igInfo = "files: ${tr.count { it.v && it.a }} with sound, ${tr.count { it.v && !it.a }} picture-only (" +
+                              tr.filter { it.v && !it.a }.map { it.codec.ifEmpty { "?" } }.distinct().joinToString("/") + "), ${tr.count { !it.v && it.a }} sound-only"
                           when {
                               both != null && (vOnly == null || aOnly == null || both.size >= vOnly.size) -> good.add(Media(both.url, true, m.thumb, m.ref))
                               vOnly != null && aOnly != null -> good.add(Media(vOnly.url, true, m.thumb, m.ref, audio = aOnly.url, ua = UA, label = "dash",
                                   alts = listOfNotNull(both?.url)))
+                              // only VP9 pictures: join them with the sound into a WebM video (the sound is converted to Opus)
+                              vAny != null && aOnly != null -> good.add(Media(vAny.url, true, m.thumb, m.ref, audio = aOnly.url, ua = UA, label = "dash", webm = true))
                               vOnly != null -> good.add(Media(vOnly.url, true, m.thumb, m.ref, label = "nosound"))
                               t0.v -> good.add(Media(m.url, true, m.thumb, m.ref, label = "nosound"))
                               m.thumb.isNotEmpty() -> {
@@ -3430,7 +3472,7 @@ jobs:
                   if (m.gua.isNotEmpty() && !m.hls) { saveWeb(m, n); return }
                   if (m.hls) { saveHls(m, n); return }
                   if (m.live) { saveLive(m, n); return }
-                  if (m.label == "nosound") warn = "The site gave this video without sound, and no separate sound file was found."
+                  if (m.label == "nosound") warn = "The site gave this video without sound, and no separate sound file was found. ($igInfo)"
                   var mm = m
                   if (m.page.isNotEmpty() && m.video) {
                       // TikTok: the HD copy (1080p, H.265, no watermark) is often not in the web page data
@@ -3862,7 +3904,7 @@ jobs:
                       af.outputStream().use { fetchChunks(m.audio, it, m.ua, m.asize, "Audio", m.ytId, m.aitag) }
                       say("Merging video and audio…")
                       val ext = if (m.webm) "webm" else "mp4"
-                      val item = newItem("${pre()}yt_${System.currentTimeMillis()}_$n.$ext", if (m.webm) "video/webm" else "video/mp4", true)
+                      val item = newItem("${pre()}${if (m.ytId.isEmpty()) "web" else "yt"}_${System.currentTimeMillis()}_$n.$ext", if (m.webm) "video/webm" else "video/mp4", true)
                       try {
                           contentResolver.openFileDescriptor(item.first, "rw")!!.use { mux(vf.path, af.path, it.fileDescriptor, m.webm) }
                       } catch (e: Exception) {
@@ -3876,6 +3918,151 @@ jobs:
                   }
               }
 
+              private class Smp(val data: ByteArray, val pts: Long, val flags: Int)
+
+              // turns any sound file (e.g. AAC) into Opus samples, which WebM can hold
+              private fun toOpus(ap: String): Pair<MediaFormat, List<Smp>> {
+                  val ex = MediaExtractor()
+                  ex.setDataSource(ap)
+                  val t = trackOf(ex, "audio/")
+                  ex.selectTrack(t)
+                  val inF = ex.getTrackFormat(t)
+                  val dec = MediaCodec.createDecoderByType(inF.getString(MediaFormat.KEY_MIME)!!)
+                  dec.configure(inF, null, null, 0)
+                  dec.start()
+                  val pcm = ByteArrayOutputStream()
+                  var rate = inF.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+                  var ch = inF.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+                  val info = MediaCodec.BufferInfo()
+                  var inDone = false
+                  var outDone = false
+                  while (!outDone) {
+                      chk()
+                      if (!inDone) {
+                          val ii = dec.dequeueInputBuffer(10000)
+                          if (ii >= 0) {
+                              val b = dec.getInputBuffer(ii)!!
+                              val n = ex.readSampleData(b, 0)
+                              if (n < 0) { dec.queueInputBuffer(ii, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM); inDone = true }
+                              else { dec.queueInputBuffer(ii, 0, n, ex.sampleTime, 0); ex.advance() }
+                          }
+                      }
+                      val oi = dec.dequeueOutputBuffer(info, 10000)
+                      if (oi == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                          val f = dec.outputFormat
+                          rate = f.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+                          ch = f.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+                      } else if (oi >= 0) {
+                          val b = dec.getOutputBuffer(oi)!!
+                          val arr = ByteArray(info.size)
+                          b.position(info.offset)
+                          b.get(arr)
+                          pcm.write(arr)
+                          dec.releaseOutputBuffer(oi, false)
+                          if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) outDone = true
+                      }
+                  }
+                  dec.stop(); dec.release(); ex.release()
+                  // 16-bit samples -> stereo (or mono) at 48 kHz
+                  val raw = pcm.toByteArray()
+                  val frames = raw.size / 2 / ch
+                  val oc = minOf(ch, 2)
+                  val sb = java.nio.ByteBuffer.wrap(raw).order(java.nio.ByteOrder.LITTLE_ENDIAN).asShortBuffer()
+                  val outFrames = (frames.toLong() * 48000 / rate).toInt()
+                  val res = ShortArray(outFrames * oc)
+                  for (i in 0 until outFrames) {
+                      val pos = i.toDouble() * rate / 48000.0
+                      val i0 = minOf(pos.toInt(), frames - 1)
+                      val i1 = minOf(i0 + 1, frames - 1)
+                      val fr = pos - i0
+                      for (c in 0 until oc) {
+                          val a = sb.get(i0 * ch + c).toInt()
+                          val b = sb.get(i1 * ch + c).toInt()
+                          res[i * oc + c] = (a + (b - a) * fr).toInt().toShort()
+                      }
+                  }
+                  val ef = MediaFormat.createAudioFormat("audio/opus", 48000, oc)
+                  ef.setInteger(MediaFormat.KEY_BIT_RATE, 128000)
+                  val enc = MediaCodec.createEncoderByType("audio/opus")
+                  enc.configure(ef, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+                  enc.start()
+                  var outFmt: MediaFormat? = null
+                  val list = ArrayList<Smp>()
+                  var fed = 0
+                  var eos = false
+                  var done = false
+                  while (!done) {
+                      chk()
+                      if (!eos) {
+                          val ii = enc.dequeueInputBuffer(10000)
+                          if (ii >= 0) {
+                              val b = enc.getInputBuffer(ii)!!
+                              val cap = minOf(b.capacity() / 2 / oc, 960 * 2)
+                              val n = minOf(cap, outFrames - fed)
+                              if (n <= 0) { enc.queueInputBuffer(ii, 0, 0, fed * 1000000L / 48000, MediaCodec.BUFFER_FLAG_END_OF_STREAM); eos = true }
+                              else {
+                                  b.clear()
+                                  val bb = b.order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                                  for (k in 0 until n * oc) bb.putShort(res[fed * oc + k])
+                                  enc.queueInputBuffer(ii, 0, n * oc * 2, fed * 1000000L / 48000, 0)
+                                  fed += n
+                              }
+                          }
+                      }
+                      val oi = enc.dequeueOutputBuffer(info, 10000)
+                      if (oi == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) outFmt = enc.outputFormat
+                      else if (oi >= 0) {
+                          if (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG == 0 && info.size > 0) {
+                              val b = enc.getOutputBuffer(oi)!!
+                              val arr = ByteArray(info.size)
+                              b.position(info.offset)
+                              b.get(arr)
+                              list.add(Smp(arr, info.presentationTimeUs, info.flags))
+                          }
+                          enc.releaseOutputBuffer(oi, false)
+                          if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) done = true
+                      }
+                  }
+                  val fmt = outFmt ?: enc.outputFormat
+                  enc.stop(); enc.release()
+                  return Pair(fmt, list)
+              }
+
+              private fun muxWebmOpus(vp: String, ap: String, fd: FileDescriptor) {
+                  say("Converting the sound…")
+                  val (af, samples) = toOpus(ap)
+                  val vex = MediaExtractor()
+                  vex.setDataSource(vp)
+                  val vt = trackOf(vex, "video/")
+                  vex.selectTrack(vt)
+                  val mx = MediaMuxer(fd, MediaMuxer.OutputFormat.MUXER_OUTPUT_WEBM)
+                  val vi = mx.addTrack(vex.getTrackFormat(vt))
+                  val ai = mx.addTrack(af)
+                  mx.start()
+                  val buf = ByteBuffer.allocate(8 * 1024 * 1024)
+                  val info = MediaCodec.BufferInfo()
+                  var k = 0
+                  while (true) {
+                      val vtm = vex.sampleTime
+                      if (vtm < 0 && k >= samples.size) break
+                      if (vtm >= 0 && (k >= samples.size || vtm <= samples[k].pts)) {
+                          val sz = vex.readSampleData(buf, 0)
+                          if (sz < 0) break
+                          info.set(0, sz, vtm, vex.sampleFlags)
+                          mx.writeSampleData(vi, buf, info)
+                          vex.advance()
+                      } else {
+                          val sm = samples[k++]
+                          val bb = ByteBuffer.wrap(sm.data)
+                          info.set(0, sm.data.size, sm.pts, 0)
+                          mx.writeSampleData(ai, bb, info)
+                      }
+                  }
+                  mx.stop()
+                  mx.release()
+                  vex.release()
+              }
+
               private fun trackOf(ex: MediaExtractor, prefix: String): Int {
                   for (i in 0 until ex.trackCount) {
                       if (ex.getTrackFormat(i).getString(MediaFormat.KEY_MIME)?.startsWith(prefix) == true) return i
@@ -3884,6 +4071,13 @@ jobs:
               }
 
               private fun mux(vp: String, ap: String, fd: FileDescriptor, webm: Boolean) {
+                  if (webm) {
+                      val aex0 = MediaExtractor()
+                      aex0.setDataSource(ap)
+                      val am = aex0.getTrackFormat(trackOf(aex0, "audio/")).getString(MediaFormat.KEY_MIME) ?: ""
+                      aex0.release()
+                      if (am != "audio/opus" && am != "audio/vorbis") { muxWebmOpus(vp, ap, fd); return }
+                  }
                   val vex = MediaExtractor()
                   vex.setDataSource(vp)
                   val aex = MediaExtractor()
