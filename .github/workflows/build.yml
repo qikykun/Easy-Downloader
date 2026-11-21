@@ -52,8 +52,8 @@ jobs:
               applicationId 'com.pribadi.easydl'
               minSdk 29
               targetSdk 34
-              versionCode 24
-              versionName '6.0'
+              versionCode 25
+              versionName '6.1'
             }
             compileOptions {
               sourceCompatibility JavaVersion.VERSION_17
@@ -534,7 +534,7 @@ jobs:
                       }
                   })
                   status = TextView(this).apply {
-                      text = "Easy Downloader 6.0\nCopy a video link from any website (Threads, X, TikTok, Facebook, Instagram, YouTube or others), then open this app. You can also paste it in the box above.\nSwipe left to see your downloaded files."
+                      text = "Easy Downloader 6.1\nCopy a video link from any website (Threads, X, TikTok, Facebook, Instagram, YouTube or others), then open this app. You can also paste it in the box above.\nSwipe left to see your downloaded files."
                       setPadding(0, dp(8), 0, dp(8))
                   }
                   list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -2266,9 +2266,37 @@ jobs:
               }
 
               // public TikTok helper service (the same kind other downloader apps use)
+              @Volatile private var ttNote = ""
+
+              private fun ttCall(page: String): JSONObject {
+                  val c = URL("https://www.tikwm.com/api/").openConnection() as HttpURLConnection
+                  c.requestMethod = "POST"
+                  c.doOutput = true
+                  c.setRequestProperty("User-Agent", UAD)
+                  c.setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
+                  c.setRequestProperty("Accept", "application/json")
+                  c.connectTimeout = 20000
+                  c.readTimeout = 30000
+                  c.outputStream.use { it.write(("url=" + URLEncoder.encode(page, "UTF-8") + "&hd=1&count=12&cursor=0&web=1").toByteArray()) }
+                  if (c.responseCode >= 400) throw IOException("HTTP ${c.responseCode}")
+                  return JSONObject(c.inputStream.bufferedReader().readText())
+              }
+
               private fun ttBackup(page: String): List<Media> {
-                  val body = get("https://www.tikwm.com/api/?hd=1&url=" + URLEncoder.encode(page, "UTF-8"))
-                  val d = JSONObject(body).optJSONObject("data") ?: return emptyList()
+                  var j: JSONObject? = null
+                  for (t in 0..2) {
+                      // the free service allows about 1 request per second
+                      if (t > 0) Thread.sleep(1500)
+                      try {
+                          val r = ttCall(page)
+                          if (r.optInt("code", -1) == 0 && r.optJSONObject("data") != null) { j = r; break }
+                          ttNote = r.optString("msg").ifEmpty { "no data" }
+                      } catch (e: Exception) {
+                          ttNote = e.message ?: "network error"
+                      }
+                  }
+                  val d = j?.optJSONObject("data") ?: return emptyList()
+                  ttNote = ""
                   val abs = { u: String -> if (u.startsWith("/")) "https://www.tikwm.com$u" else u }
                   d.optJSONObject("author")?.optString("unique_id")?.takeIf { it.isNotEmpty() }?.let { setSrc(it, "tiktok") }
                   val imgs = d.optJSONArray("images")
@@ -2277,7 +2305,9 @@ jobs:
                       for (i in 0 until imgs.length()) { val u = imgs.optString(i); if (u.startsWith("http")) out.add(Media(u, false, u)) }
                       return out
                   }
-                  val urls = listOf(d.optString("hdplay"), d.optString("play")).filter { it.isNotEmpty() }.map(abs).distinct()
+                  val hdp = d.optString("hdplay")
+                  if (hdp.isEmpty()) ttNote = "TikTok has no HD copy of this video"
+                  val urls = listOf(hdp, d.optString("play")).filter { it.isNotEmpty() }.map(abs).distinct()
                   if (urls.isEmpty()) return emptyList()
                   return listOf(Media(urls[0], true, abs(d.optString("cover")), alts = urls.drop(1)))
               }
@@ -2595,8 +2625,14 @@ jobs:
                               else if (m.thumb.isNotEmpty()) good.add(Media(m.thumb, false, m.thumb, m.ref))
                               continue
                           }
+                          val t0 = try { tracksAt(m.url, m.ref) } catch (e: Exception) { null }
+                          if (t0 == null || (t0.v && t0.a) || (!t0.v && !t0.a)) {
+                              // normal case (or the check could not read it): the post's own video file, like before
+                              good.add(Media(m.url, true, m.thumb, m.ref, alts = m.alts))
+                              continue
+                          }
                           val all = (listOf(m.url) + m.alts + listOf(m.audio) + net).filter { it.startsWith("http") }.distinct().take(12)
-                          val tr = all.mapNotNull { u -> try { tracksAt(u, m.ref) } catch (e: Exception) { null } }
+                          val tr = listOf(t0) + all.drop(1).mapNotNull { u -> try { tracksAt(u, m.ref) } catch (e: Exception) { null } }
                           val both = tr.filter { it.v && it.a }.maxByOrNull { it.size }
                           // VP9 / AV1 pictures cannot be joined into an MP4 on most phones: use H.264 / H.265 ones
                           val okc = setOf("", "avc1", "avc3", "hvc1", "hev1")
@@ -2607,6 +2643,7 @@ jobs:
                               vOnly != null && aOnly != null -> good.add(Media(vOnly.url, true, m.thumb, m.ref, audio = aOnly.url, ua = UA, label = "dash",
                                   alts = listOfNotNull(both?.url)))
                               vOnly != null -> good.add(Media(vOnly.url, true, m.thumb, m.ref))
+                              t0.v -> good.add(Media(m.url, true, m.thumb, m.ref))
                               m.thumb.isNotEmpty() -> {
                                   good.add(Media(m.thumb, false, m.thumb, m.ref))
                                   diag = "This post has only music, no video, so its photo is shown"
@@ -3318,8 +3355,13 @@ jobs:
                       say("Looking for the HD version…")
                       val hd = try { ttBackup(m.page).firstOrNull { it.video } } catch (e: Exception) { null }
                       if (hd != null) mm = Media(m.url, true, m.thumb, m.ref, alts = m.alts + listOf(hd.url) + hd.alts)
+                      warn = if (hd == null) "HD version not available (${ttNote.ifEmpty { "no answer" }})." else ""
                   }
                   val url = pickBest(mm)
+                  if (m.page.isNotEmpty() && m.video) {
+                      val mbs = try { sizeOf(url, m.ref) } catch (e: Exception) { -1L }
+                      if (mbs > 0) warn = (if (url.contains("tikwm")) "HD version · " else "") + "${mbs / 1048576} MB. " + warn
+                  }
                   val path = url.substringBefore("?").lowercase()
                   val ext = if (m.video) "mp4" else if (path.endsWith(".png")) "png" else if (path.endsWith(".webp")) "webp" else "jpg"
                   val mime = if (m.video) "video/mp4" else when (ext) {
