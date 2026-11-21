@@ -52,8 +52,8 @@ jobs:
               applicationId 'com.pribadi.easydl'
               minSdk 29
               targetSdk 34
-              versionCode 20
-              versionName '5.6'
+              versionCode 21
+              versionName '5.7'
             }
             compileOptions {
               sourceCompatibility JavaVersion.VERSION_17
@@ -312,6 +312,7 @@ jobs:
               private var allFiles: List<FileItem> = emptyList()
               private var fType = 0
               private var fSort = 0
+              private var fPlat = ""
               private lateinit var histPage: LinearLayout
               private lateinit var histList: LinearLayout
               private lateinit var tabHist: TextView
@@ -532,7 +533,7 @@ jobs:
                       }
                   })
                   status = TextView(this).apply {
-                      text = "Easy Downloader 5.6\nCopy a video link from any website (Threads, X, TikTok, Facebook, Instagram, YouTube or others), then open this app. You can also paste it in the box above.\nSwipe left to see your downloaded files."
+                      text = "Easy Downloader 5.7\nCopy a video link from any website (Threads, X, TikTok, Facebook, Instagram, YouTube or others), then open this app. You can also paste it in the box above.\nSwipe left to see your downloaded files."
                       setPadding(0, dp(8), 0, dp(8))
                   }
                   list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -615,6 +616,10 @@ jobs:
                       gravity = Gravity.CENTER_HORIZONTAL
                       addView(bar, LinearLayout.LayoutParams(barW, dp(22)))
                       addView(loaderText, LinearLayout.LayoutParams(-1, -2))
+                      addView(Button(this@MainActivity).apply {
+                          text = "✕  Cancel"
+                          setOnClickListener { cancelSearch() }
+                      }, LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(20) })
                   }
                   loader = FrameLayout(this).apply {
                       visibility = View.GONE
@@ -674,12 +679,18 @@ jobs:
                       override fun afterTextChanged(e: android.text.Editable?) { renderFiles() }
                   })
                   typeBtn = Button(this).apply {
-                      text = "All"
-                      setOnClickListener { fType = (fType + 1) % 3; text = listOf("All", "Photos", "Videos")[fType]; renderFiles() }
+                      text = "Filter: All ▾"
+                      setOnClickListener { filterMenu(this) }
                   }
                   sortBtn = Button(this).apply {
-                      text = "Newest"
-                      setOnClickListener { fSort = (fSort + 1) % 3; text = listOf("Newest", "Largest", "Smallest")[fSort]; renderFiles() }
+                      text = "Sort: Newest ▾"
+                      setOnClickListener {
+                          val names = listOf("Newest", "Oldest", "Largest", "Smallest", "Name (A-Z)")
+                          val pm = android.widget.PopupMenu(this@MainActivity, this)
+                          names.forEachIndexed { k, n -> pm.menu.add(0, k, k, (if (k == fSort) "✓ " else "") + n) }
+                          pm.setOnMenuItemClickListener { mi -> fSort = mi.itemId; text = "Sort: ${names[fSort]} ▾"; renderFiles(); true }
+                          pm.show()
+                      }
                   }
                   filesPage = LinearLayout(this).apply {
                       orientation = LinearLayout.VERTICAL
@@ -955,7 +966,11 @@ jobs:
                       val old = loadHist()
                       val a = JSONArray()
                       a.put(JSONObject().put("link", link).put("src", src).put("state", state.take(160)).put("time", System.currentTimeMillis()))
-                      for (i in 0 until minOf(old.length(), 199)) a.put(old.opt(i))
+                      for (i in 0 until old.length()) {
+                          if (a.length() >= 200) break
+                          val o = old.optJSONObject(i) ?: continue
+                          if (o.optString("link") != link) a.put(o)
+                      }
                       saveHist(a)
                       if (page == 2) refreshHist()
                   }
@@ -979,7 +994,7 @@ jobs:
                           setPadding(0, dp(8), 0, dp(8))
                           addView(LinearLayout(this@MainActivity).apply {
                               orientation = LinearLayout.VERTICAL
-                              addView(TextView(this@MainActivity).apply { text = o.optString("src"); setTextColor(fgCol); textSize = 15f })
+                              addView(TextView(this@MainActivity).apply { text = parseSrc(o.optString("src") + "_000000000000").let { val t = accText(it); if (it.first.isNotEmpty()) t + " · " + platName(it.second) else t }; setTextColor(fgCol); textSize = 15f })
                               addView(TextView(this@MainActivity).apply {
                                   text = (if (good) "✓ " else "✕ ") + st
                                   setTextColor(if (good) Color.rgb(46, 160, 67) else Color.rgb(211, 47, 47))
@@ -1034,10 +1049,7 @@ jobs:
               }
 
               // the account / site the file came from (first part of the file name)
-              private fun srcLabel(name: String): String {
-                  val first = name.substringBefore("_")
-                  return if (first.isEmpty() || first == "easydl") "Unknown source" else first
-              }
+              private fun srcLabel(name: String): String = accText(parseSrc(name))
 
               private fun mbText(b: Long): String = if (b >= 1048576) String.format(java.util.Locale.US, "%.1f MB", b / 1048576.0) else "${b / 1024} KB"
 
@@ -1066,11 +1078,14 @@ jobs:
                   val q = searchBox.text.toString().trim().lowercase()
                   var shown = allFiles.filter { f ->
                       (fType == 0 || (fType == 1 && !f.video) || (fType == 2 && f.video)) &&
-                          (q.isEmpty() || f.name.lowercase().contains(q) || srcLabel(f.name).lowercase().contains(q))
+                          (fPlat.isEmpty() || parseSrc(f.name).second == fPlat) &&
+                          (q.isEmpty() || f.name.lowercase().contains(q) || srcLabel(f.name).lowercase().contains(q) || platName(parseSrc(f.name).second).lowercase().contains(q))
                   }
                   shown = when (fSort) {
-                      1 -> shown.sortedByDescending { it.size }
-                      2 -> shown.sortedBy { it.size }
+                      1 -> shown.sortedBy { it.date }
+                      2 -> shown.sortedByDescending { it.size }
+                      3 -> shown.sortedBy { it.size }
+                      4 -> shown.sortedBy { srcLabel(it.name).lowercase() }
                       else -> shown
                   }
                   filesInfo.text = if (allFiles.isEmpty()) "Nothing downloaded yet."
@@ -1105,9 +1120,10 @@ jobs:
                           addView(LinearLayout(this@MainActivity).apply {
                               orientation = LinearLayout.VERTICAL
                               setPadding(dp(12), 0, 0, 0)
-                              addView(TextView(this@MainActivity).apply { text = srcLabel(f.name); textSize = 15f; setTextColor(fgCol); maxLines = 1 })
+                              val ps = parseSrc(f.name)
+                              addView(TextView(this@MainActivity).apply { text = accText(ps); textSize = 15f; setTextColor(fgCol); maxLines = 1 })
                               addView(TextView(this@MainActivity).apply {
-                                  text = (if (f.video) "Video" else "Photo") + (if (f.video && f.dur > 0) " · " + durText(f.dur) else "") + " · " + mbText(f.size)
+                                  text = (if (ps.first.isNotEmpty() && ps.second.isNotEmpty()) platName(ps.second) + " · " else "") + (if (f.video) "Video" else "Photo") + (if (f.video && f.dur > 0) " · " + durText(f.dur) else "") + " · " + mbText(f.size)
                                   textSize = 13f
                                   setTextColor(subCol)
                               })
@@ -1132,6 +1148,25 @@ jobs:
                           }
                       }
                   }
+              }
+
+              // drop-down: what to show (type and where it came from)
+              private fun filterMenu(b: Button) {
+                  val pm = android.widget.PopupMenu(this, b)
+                  val types = listOf("All files", "Photos only", "Videos only")
+                  types.forEachIndexed { k, n -> pm.menu.add(0, k, k, (if (k == fType && fPlat.isEmpty()) "✓ " else "") + n) }
+                  val plats = allFiles.map { parseSrc(it.name).second }.filter { it.isNotEmpty() }.distinct().sortedBy { platName(it).lowercase() }
+                  plats.forEachIndexed { k, pl -> pm.menu.add(1, 100 + k, 100 + k, (if (pl == fPlat) "✓ " else "") + "From " + platName(pl)) }
+                  pm.setOnMenuItemClickListener { mi ->
+                      if (mi.itemId < 100) {
+                          fType = mi.itemId
+                          fPlat = ""
+                      } else fPlat = plats[mi.itemId - 100]
+                      b.text = "Filter: " + (if (fPlat.isNotEmpty()) platName(fPlat) else listOf("All", "Photos", "Videos")[fType]) + " ▾"
+                      renderFiles()
+                      true
+                  }
+                  pm.show()
               }
 
               private fun markRow(u: Uri) {
@@ -1396,6 +1431,18 @@ jobs:
                   genBtn.isEnabled = false
               }
 
+              private fun cancelSearch() {
+                  gen++
+                  pollStop = true
+                  busy(false)
+                  host.removeAllViews()
+                  web?.destroy()
+                  web = null
+                  lastLink = ""
+                  btn.isEnabled = true
+                  status.text = "Cancelled."
+              }
+
               private fun cancelWeb() {
                   closeWeb()
                   clearLink()
@@ -1611,29 +1658,63 @@ jobs:
                   }
               }
 
-              private fun clean(s: String): String = s.replace(Regex("[^A-Za-z0-9@.\\-]"), "-").replace(Regex("-+"), "-").trim('-').take(60)
+              private fun clean(s: String): String = s.replace(Regex("[^A-Za-z0-9@._\\-]"), "-").replace(Regex("-+"), "-").trim('-', '_').take(50)
 
-              private fun srcOf(link: String): String {
+              // file names start with "<account>_<platform>_", e.g. alifyaqnada_tiktok_1795..._0.mp4
+              private fun setSrc(acc: String, plat0: String) {
+                  val a = clean(acc.removePrefix("@"))
+                  srcName = if (a.isEmpty()) plat0 else a + "_" + plat0
+              }
+
+              private fun srcOf(link: String): Pair<String, String> {
                   val l = link.lowercase()
-                  val at = Regex("/@([A-Za-z0-9._]+)").find(link)?.groupValues?.get(1)
+                  val at = Regex("/@([A-Za-z0-9._]+)").find(link)?.groupValues?.get(1) ?: ""
                   return when {
-                      l.contains("tiktok.com") -> "tiktok" + (if (at != null) "-@$at" else "")
-                      l.contains("threads.") -> "threads" + (if (at != null) "-@$at" else "")
-                      l.contains("instagram.com") -> "instagram" + (Regex("instagram\\.com/(?:stories/)?([A-Za-z0-9._]+)/").find(link)?.groupValues?.get(1)
-                          ?.takeIf { it !in setOf("p", "reel", "reels", "tv", "stories", "s", "highlights") }?.let { "-@$it" } ?: "")
-                      l.contains("youtube.com") || l.contains("youtu.be") -> "youtube"
-                      l.contains("facebook.com") || l.contains("fb.watch") || l.contains("fb.com") -> "facebook"
+                      l.contains("tiktok.com") -> Pair(at, "tiktok")
+                      l.contains("threads.") -> Pair(at, "threads")
+                      l.contains("instagram.com") -> Pair(Regex("instagram\\.com/(?:stories/)?([A-Za-z0-9._]+)/").find(link)?.groupValues?.get(1)
+                          ?.takeIf { it !in setOf("p", "reel", "reels", "tv", "stories", "s", "highlights") } ?: "", "instagram")
+                      l.contains("youtube.com") || l.contains("youtu.be") -> Pair("", "youtube")
+                      l.contains("facebook.com") || l.contains("fb.watch") || l.contains("fb.com") -> Pair("", "facebook")
                       Regex("^https?://(?:[\\w-]+\\.)*(?:x|twitter)\\.com/").containsMatchIn(l) ->
-                          "x" + (Regex("(?:x|twitter)\\.com/([A-Za-z0-9_]+)/status").find(link)?.groupValues?.get(1)?.takeIf { it != "i" }?.let { "-@$it" } ?: "")
-                      else -> (try { URL(link).host.removePrefix("www.") } catch (e: Exception) { "web" })
+                          Pair(Regex("(?:x|twitter)\\.com/([A-Za-z0-9_]+)/status").find(link)?.groupValues?.get(1)?.takeIf { it != "i" } ?: "", "x")
+                      else -> Pair("", try { URL(link).host.removePrefix("www.") } catch (e: Exception) { "web" })
                   }
+              }
+
+              private val PLATS = mapOf("tiktok" to "TikTok", "x" to "X", "instagram" to "Instagram", "threads" to "Threads", "youtube" to "YouTube", "facebook" to "Facebook")
+
+              // reads account and platform back from a file name (or from a history entry)
+              private fun parseSrc(name: String): Pair<String, String> {
+                  val base = name.substringBeforeLast(".")
+                  var t = base.split("_")
+                  val ts = t.indexOfFirst { it.length >= 12 && it.all { c -> c.isDigit() } }
+                  if (ts >= 0) t = t.subList(0, ts)
+                  if (t.isNotEmpty() && t.last() in setOf("web", "yt", "live")) t = t.dropLast(1)
+                  if (t.isEmpty() || (t.size == 1 && t[0] == "easydl")) return Pair("", "")
+                  if (t.size == 1) {
+                      val x = t[0]
+                      if (x.contains("-@")) return Pair(x.substringAfter("-@"), x.substringBefore("-@"))
+                      if (x.startsWith("youtube-")) return Pair(x.removePrefix("youtube-"), "youtube")
+                      return Pair("", x)
+                  }
+                  return Pair(t.dropLast(1).joinToString("_"), t.last())
+              }
+
+              private fun platName(p: String): String = PLATS[p] ?: p
+
+              private fun accText(a: Pair<String, String>): String = when {
+                  a.first.isEmpty() && a.second.isEmpty() -> "Unknown source"
+                  a.first.isEmpty() -> platName(a.second)
+                  a.second == "youtube" || a.second == "facebook" -> a.first.replace("-", " ")
+                  else -> "@" + a.first
               }
 
               private fun pre(): String = (dlSrc.get() ?: "easydl") + "_"
 
               private fun start(link: String) {
                   closeWeb()
-                  srcName = clean(srcOf(link))
+                  srcOf(link).let { setSrc(it.first, it.second) }
                   lastLink = link
                   quiet = true
                   input.setText(link)
@@ -1761,6 +1842,7 @@ jobs:
 
               private fun parseX(text: String): List<Media> {
                   val j = JSONObject(text)
+                  j.optJSONObject("user")?.optString("screen_name")?.takeIf { it.isNotEmpty() }?.let { setSrc(it, "x") }
                   val out = ArrayList<Media>()
                   xMedia(j.optJSONArray("mediaDetails"), out)
                   xMedia(j.optJSONObject("quoted_tweet")?.optJSONArray("mediaDetails"), out)
@@ -1857,12 +1939,19 @@ jobs:
                   val url = w.url ?: ""
                   val docs = synchronized(captured) { ArrayList(captured) }
                   var found: List<Media> = emptyList()
-                  if ((plat == "tt" || plat == "th") && url.contains("/@")) srcName = clean(srcOf(url))
+                  if ((plat == "tt" || plat == "th") && url.contains("/@")) srcOf(url).let { setSrc(it.first, it.second) }
                   when (plat) {
                       "tt" -> {
                           val id = Regex("/(?:video|photo)/(\\d+)").find(url)?.groupValues?.get(1) ?: ""
                           if (id.isNotEmpty()) found = parseTT(docs, id)
                           if (found.isEmpty() && tick >= 10) found = parseTT(docs, "")
+                          // the page data has the post but no video link (newer TikTok pages): use the second source right away
+                          if (found.isEmpty() && tick >= 6 && url.contains("/video/") && docs.any { it.contains("itemStruct") }) {
+                              val net = synchronized(netVideos) { ArrayList(netVideos) }
+                              if (net.isNotEmpty()) { show(listOf(Media(net[0], true, "", "https://www.tiktok.com/", alts = net.drop(1).take(5)))); return }
+                              ttFallback(my, url)
+                              return
+                          }
                           if (found.isNotEmpty() && found.none { it.video }) {
                               // photo post: watch the page traffic for a few seconds in case live photo clips load
                               found = if (tick < 5) emptyList() else withNet(found)
@@ -1977,8 +2066,7 @@ jobs:
                               show(listOf(Media(net[0], true, "", "https://www.tiktok.com/", alts = net.drop(1).take(5))))
                               return
                           }
-                          val it0 = docs.asSequence().flatMap { jsonRoots(it).asSequence() }.mapNotNull { findItem(it, "") }.firstOrNull()
-                          fail(my, "TikTok did not give a video link for this post. It may be private, age-restricted or removed. (video: ${keyList(it0?.optJSONObject("video"))})")
+                          ttFallback(my, url)
                           return
                       }
                       fail(my, "Nothing found. url=$url; data=${docs.size}; ${kinds(docs)}")
@@ -2150,6 +2238,37 @@ jobs:
                   listOf("image_versions2", "video_versions", "carousel_media", "itemStruct", "viewer_image")
                       .joinToString(",") { k -> "$k=${docs.count { it.contains(k) }}" }
 
+              private fun ttFallback(my: Int, url: String) {
+                  pollStop = true
+                  say("Trying another way…")
+                  val page = if (url.startsWith("http")) url else lastLink
+                  Thread {
+                      val r = try { ttBackup(page) } catch (e: Exception) { emptyList() }
+                      runOnUiThread {
+                          if (my != gen) return@runOnUiThread
+                          if (r.isNotEmpty()) show(r)
+                          else fail(my, "TikTok did not give a video link for this post. It may be private, age-restricted or removed.")
+                      }
+                  }.start()
+              }
+
+              // public TikTok helper service (the same kind other downloader apps use)
+              private fun ttBackup(page: String): List<Media> {
+                  val body = get("https://www.tikwm.com/api/?hd=1&url=" + URLEncoder.encode(page, "UTF-8"))
+                  val d = JSONObject(body).optJSONObject("data") ?: return emptyList()
+                  val abs = { u: String -> if (u.startsWith("/")) "https://www.tikwm.com$u" else u }
+                  d.optJSONObject("author")?.optString("unique_id")?.takeIf { it.isNotEmpty() }?.let { setSrc(it, "tiktok") }
+                  val imgs = d.optJSONArray("images")
+                  if (imgs != null && imgs.length() > 0) {
+                      val out = ArrayList<Media>()
+                      for (i in 0 until imgs.length()) { val u = imgs.optString(i); if (u.startsWith("http")) out.add(Media(u, false, u)) }
+                      return out
+                  }
+                  val urls = listOf(d.optString("hdplay"), d.optString("play")).filter { it.isNotEmpty() }.map(abs).distinct()
+                  if (urls.isEmpty()) return emptyList()
+                  return listOf(Media(urls[0], true, abs(d.optString("cover")), alts = urls.drop(1)))
+              }
+
               private fun withNet(found: List<Media>): List<Media> {
                   val net = synchronized(netVideos) { ArrayList(netVideos) }
                   if (net.isEmpty()) return found
@@ -2258,7 +2377,7 @@ jobs:
                       return out
                   }
                   val au = item.optJSONObject("author")?.optString("uniqueId") ?: item.optString("author")
-                  if (au.isNotEmpty() && !au.startsWith("{")) srcName = clean("tiktok-@$au")
+                  if (au.isNotEmpty() && !au.startsWith("{")) setSrc(au, "tiktok")
                   val v = item.optJSONObject("video") ?: return out
                   val h264 = ArrayList<Pair<Long, String>>()
                   val other = ArrayList<Pair<Long, String>>()
@@ -2311,6 +2430,8 @@ jobs:
 
               private fun collectTh(p: JSONObject): List<Media> {
                   val out = ArrayList<Media>()
+                  val un = p.optJSONObject("user")?.optString("username") ?: p.optJSONObject("owner")?.optString("username") ?: ""
+                  if (un.isNotEmpty()) setSrc(un, if (plat == "th") "threads" else "instagram")
                   val car = p.optJSONArray("carousel_media")
                   if (car != null && car.length() > 0) {
                       for (i in 0 until car.length()) oneTh(car.optJSONObject(i))?.let { out.add(it) }
@@ -2540,6 +2661,11 @@ jobs:
                           photos.putIfAbsent(u.substringBefore("?").substringAfterLast("/"), u)
                       }
                   }
+                  for (d in docs) {
+                      val nm = grab(d, "\"owner\":\\{\"__typename\":\"(?:User|Page)\",(?:\"[a-z_]+\":[^,]*,)*?\"name\":\"([^\"]+)\"")
+                          ?: grab(d, "\"actors\":\\[\\{\"__typename\":\"(?:User|Page)\",\"name\":\"([^\"]+)\"")
+                      if (!nm.isNullOrEmpty()) { setSrc(nm, "facebook"); break }
+                  }
                   if (hd.isNotEmpty() || sd.isNotEmpty()) {
                       val first = if (hd.isNotEmpty()) hd else sd
                       val alts = if (hd.isNotEmpty() && sd.isNotEmpty()) listOf(sd) else emptyList()
@@ -2624,7 +2750,7 @@ jobs:
                           val opts = buildYt(id, sd, c.ua)
                           if (opts.isNotEmpty()) {
                               val au = j.optJSONObject("videoDetails")?.optString("author") ?: ""
-                              if (au.isNotEmpty()) srcName = clean("youtube-$au")
+                              if (au.isNotEmpty()) setSrc(au, "youtube")
                               return Pair(opts, j.optJSONObject("videoDetails")?.optString("title") ?: "")
                           }
                           if (reason.isEmpty()) reason = "no direct download formats for this video"
