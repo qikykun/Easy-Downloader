@@ -52,8 +52,8 @@ jobs:
               applicationId 'com.pribadi.easydl'
               minSdk 29
               targetSdk 34
-              versionCode 19
-              versionName '5.5'
+              versionCode 20
+              versionName '5.6'
             }
             compileOptions {
               sourceCompatibility JavaVersion.VERSION_17
@@ -77,7 +77,7 @@ jobs:
               android:icon="@mipmap/ic_launcher"
               android:roundIcon="@mipmap/ic_launcher"
               android:usesCleartextTraffic="true"
-              android:theme="@android:style/Theme.Material.Light.NoActionBar">
+              android:theme="@android:style/Theme.DeviceDefault.DayNight">
               <activity
                 android:name=".MainActivity"
                 android:exported="true"
@@ -267,7 +267,7 @@ jobs:
               }
           }
 
-          class FileItem(val uri: Uri, val video: Boolean)
+          class FileItem(val uri: Uri, val video: Boolean, val name: String = "", val size: Long = 0L, val date: Long = 0L, val dur: Long = 0L)
 
           class AuthFail(code: Int) : IOException("Instagram refused the request (HTTP $code)")
 
@@ -298,6 +298,23 @@ jobs:
               private lateinit var fullBox: FrameLayout
               private var fullCb: android.webkit.WebChromeClient.CustomViewCallback? = null
               private var page = 0
+              @Volatile private var srcName = "download"
+              private val dlSrc = ThreadLocal<String>()
+              private val dark by lazy { (resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK) == android.content.res.Configuration.UI_MODE_NIGHT_YES }
+              private val bgCol by lazy { if (dark) Color.rgb(18, 18, 18) else Color.rgb(250, 250, 250) }
+              private val fgCol by lazy { if (dark) Color.rgb(230, 230, 230) else Color.rgb(33, 33, 33) }
+              private val subCol by lazy { if (dark) Color.rgb(160, 160, 160) else Color.rgb(110, 110, 110) }
+              private val hiCol by lazy { if (dark) Color.rgb(27, 60, 35) else Color.rgb(232, 245, 233) }
+              private lateinit var filesList: LinearLayout
+              private lateinit var searchBox: EditText
+              private lateinit var typeBtn: Button
+              private lateinit var sortBtn: Button
+              private var allFiles: List<FileItem> = emptyList()
+              private var fType = 0
+              private var fSort = 0
+              private lateinit var histPage: LinearLayout
+              private lateinit var histList: LinearLayout
+              private lateinit var tabHist: TextView
               private var genPick: Media? = null
               private lateinit var playerBox: FrameLayout
               private lateinit var viewBtn: Button
@@ -325,7 +342,7 @@ jobs:
                   android.view.GestureDetector(this, object : android.view.GestureDetector.SimpleOnGestureListener() {
                       override fun onFling(e1: MotionEvent?, e2: MotionEvent, vx: Float, vy: Float): Boolean {
                           if (Math.abs(vx) < 900 || Math.abs(vx) < Math.abs(vy) * 1.5f) return false
-                          showPage(if (vx < 0) 1 else 0)
+                          showPage(if (vx < 0) minOf(page + 1, 2) else maxOf(page - 1, 0))
                           return true
                       }
                   })
@@ -499,6 +516,7 @@ jobs:
               }
 
               override fun onCreate(savedInstanceState: Bundle?) {
+                  requestWindowFeature(android.view.Window.FEATURE_NO_TITLE)
                   super.onCreate(savedInstanceState)
                   input = EditText(this).apply { hint = "Paste a link, or share it to this app"; setSingleLine() }
                   // a link pasted or typed into the box starts right away
@@ -514,7 +532,7 @@ jobs:
                       }
                   })
                   status = TextView(this).apply {
-                      text = "Easy Downloader 5.5\nCopy a video link from any website (Threads, X, TikTok, Facebook, Instagram, YouTube or others), then open this app. You can also paste it in the box above.\nSwipe left to see your downloaded files."
+                      text = "Easy Downloader 5.6\nCopy a video link from any website (Threads, X, TikTok, Facebook, Instagram, YouTube or others), then open this app. You can also paste it in the box above.\nSwipe left to see your downloaded files."
                       setPadding(0, dp(8), 0, dp(8))
                   }
                   list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -576,7 +594,7 @@ jobs:
 
                   // loading bar: a long box with a green fill that grows while we wait
                   val barW = (resources.displayMetrics.widthPixels * 0.7f).toInt()
-                  val track = GradientDrawable().apply { setColor(Color.WHITE); setStroke(dp(2), Color.BLACK); cornerRadius = dp(10).toFloat() }
+                  val track = GradientDrawable().apply { setColor(if (dark) Color.rgb(45, 45, 45) else Color.WHITE); setStroke(dp(2), if (dark) Color.LTGRAY else Color.BLACK); cornerRadius = dp(10).toFloat() }
                   val fillShape = GradientDrawable().apply { setColor(Color.rgb(46, 160, 67)); cornerRadius = dp(7).toFloat() }
                   barFill = View(this).apply {
                       background = fillShape
@@ -589,7 +607,7 @@ jobs:
                   }
                   loaderText = TextView(this).apply {
                       gravity = Gravity.CENTER
-                      setTextColor(Color.DKGRAY)
+                      setTextColor(subCol)
                       setPadding(dp(24), dp(14), dp(24), 0)
                   }
                   val box = LinearLayout(this).apply {
@@ -601,7 +619,7 @@ jobs:
                   loader = FrameLayout(this).apply {
                       visibility = View.GONE
                       isClickable = true
-                      setBackgroundColor(Color.argb(245, 250, 250, 250))
+                      setBackgroundColor(Color.argb(245, Color.red(bgCol), Color.green(bgCol), Color.blue(bgCol)))
                       addView(box, FrameLayout.LayoutParams(-1, -2, Gravity.CENTER))
                   }
 
@@ -611,7 +629,7 @@ jobs:
                   loginHost = LinearLayout(this).apply {
                       orientation = LinearLayout.VERTICAL
                       visibility = View.GONE
-                      setBackgroundColor(Color.WHITE)
+                      setBackgroundColor(bgCol)
                       setPadding(0, dp(32), 0, 0)
                       addView(LinearLayout(this@MainActivity).apply {
                           gravity = Gravity.CENTER_VERTICAL
@@ -645,18 +663,62 @@ jobs:
                       })
                   }
                   filesGrid = GridLayout(this).apply { columnCount = 3 }
+                  filesList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+                  searchBox = EditText(this).apply {
+                      hint = "Search by name / account"
+                      setSingleLine()
+                  }
+                  searchBox.addTextChangedListener(object : android.text.TextWatcher {
+                      override fun beforeTextChanged(t: CharSequence?, a: Int, b: Int, c: Int) {}
+                      override fun onTextChanged(t: CharSequence?, a: Int, b: Int, c: Int) {}
+                      override fun afterTextChanged(e: android.text.Editable?) { renderFiles() }
+                  })
+                  typeBtn = Button(this).apply {
+                      text = "All"
+                      setOnClickListener { fType = (fType + 1) % 3; text = listOf("All", "Photos", "Videos")[fType]; renderFiles() }
+                  }
+                  sortBtn = Button(this).apply {
+                      text = "Newest"
+                      setOnClickListener { fSort = (fSort + 1) % 3; text = listOf("Newest", "Largest", "Smallest")[fSort]; renderFiles() }
+                  }
                   filesPage = LinearLayout(this).apply {
                       orientation = LinearLayout.VERTICAL
                       setPadding(dp(16), dp(4), dp(16), dp(16))
-                      setBackgroundColor(Color.rgb(250, 250, 250))
+                      setBackgroundColor(bgCol)
+                      addView(searchBox, LinearLayout.LayoutParams(-1, -2))
+                      addView(LinearLayout(this@MainActivity).apply {
+                          addView(typeBtn, LinearLayout.LayoutParams(0, -2, 1f))
+                          addView(sortBtn, LinearLayout.LayoutParams(0, -2, 1f))
+                      }, LinearLayout.LayoutParams(-1, -2))
                       addView(filesInfo)
                       addView(selBar, LinearLayout.LayoutParams(-1, -2))
-                      addView(ScrollView(this@MainActivity).apply { addView(filesGrid) }, LinearLayout.LayoutParams(-1, 0, 1f))
+                      addView(ScrollView(this@MainActivity).apply { addView(filesList) }, LinearLayout.LayoutParams(-1, 0, 1f))
+                  }
+                  // third page: history of every link, with Retry
+                  histList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+                  histPage = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setPadding(dp(16), dp(4), dp(16), dp(16))
+                      setBackgroundColor(bgCol)
+                      addView(Button(this@MainActivity).apply {
+                          text = "Clear history"
+                          setOnClickListener {
+                              android.app.AlertDialog.Builder(this@MainActivity)
+                                  .setTitle("Clear the whole history?")
+                                  .setMessage("Your downloaded files are not deleted, only this list.")
+                                  .setNegativeButton("Cancel", null)
+                                  .setPositiveButton("Clear") { _, _ -> saveHist(JSONArray()); refreshHist() }
+                                  .show()
+                          }
+                      }, LinearLayout.LayoutParams(-1, -2))
+                      addView(ScrollView(this@MainActivity).apply { addView(histList) }, LinearLayout.LayoutParams(-1, 0, 1f))
                   }
                   val pages = FrameLayout(this)
                   pages.addView(content, FrameLayout.LayoutParams(-1, -1))
                   pages.addView(filesPage, FrameLayout.LayoutParams(-1, -1))
+                  pages.addView(histPage, FrameLayout.LayoutParams(-1, -1))
                   filesPage.translationX = resources.displayMetrics.widthPixels.toFloat()
+                  histPage.translationX = resources.displayMetrics.widthPixels * 2f
                   tabDl = TextView(this).apply {
                       text = "Download"
                       gravity = Gravity.CENTER
@@ -669,12 +731,19 @@ jobs:
                       setPadding(0, dp(12), 0, dp(12))
                       setOnClickListener { showPage(1) }
                   }
+                  tabHist = TextView(this).apply {
+                      text = "History"
+                      gravity = Gravity.CENTER
+                      setPadding(0, dp(12), 0, dp(12))
+                      setOnClickListener { showPage(2) }
+                  }
                   val outer = LinearLayout(this).apply {
                       orientation = LinearLayout.VERTICAL
                       setPadding(0, dp(28), 0, 0)
                       addView(LinearLayout(this@MainActivity).apply {
                           addView(tabDl, LinearLayout.LayoutParams(0, -2, 1f))
                           addView(tabFiles, LinearLayout.LayoutParams(0, -2, 1f))
+                          addView(tabHist, LinearLayout.LayoutParams(0, -2, 1f))
                       }, LinearLayout.LayoutParams(-1, -2))
                       addView(pages, LinearLayout.LayoutParams(-1, 0, 1f))
                   }
@@ -731,7 +800,7 @@ jobs:
                   webHost = LinearLayout(this).apply {
                       orientation = LinearLayout.VERTICAL
                       visibility = View.GONE
-                      setBackgroundColor(Color.WHITE)
+                      setBackgroundColor(bgCol)
                       setPadding(0, dp(32), 0, 0)
                       addView(LinearLayout(this@MainActivity).apply {
                           gravity = Gravity.CENTER_VERTICAL
@@ -852,20 +921,83 @@ jobs:
               }
 
               private fun markTabs() {
-                  tabDl.setTextColor(if (page == 0) Color.rgb(46, 160, 67) else Color.GRAY)
-                  tabFiles.setTextColor(if (page == 1) Color.rgb(46, 160, 67) else Color.GRAY)
-                  tabDl.setBackgroundColor(if (page == 0) Color.rgb(232, 245, 233) else Color.TRANSPARENT)
-                  tabFiles.setBackgroundColor(if (page == 1) Color.rgb(232, 245, 233) else Color.TRANSPARENT)
+                  val tabs = listOf(tabDl, tabFiles, tabHist)
+                  for (k in tabs.indices) {
+                      tabs[k].setTextColor(if (page == k) Color.rgb(46, 160, 67) else Color.GRAY)
+                      tabs[k].setBackgroundColor(if (page == k) hiCol else Color.TRANSPARENT)
+                  }
               }
 
               private fun showPage(p: Int) {
                   if (p == page) return
                   page = p
                   val w = resources.displayMetrics.widthPixels.toFloat()
-                  content.animate().translationX(if (p == 1) -w else 0f).setDuration(220).start()
-                  filesPage.animate().translationX(if (p == 1) 0f else w).setDuration(220).start()
+                  content.animate().translationX(-p * w).setDuration(220).start()
+                  filesPage.animate().translationX((1 - p) * w).setDuration(220).start()
+                  histPage.animate().translationX((2 - p) * w).setDuration(220).start()
                   markTabs()
                   if (p == 1) refreshFiles()
+                  if (p == 2) refreshHist()
+              }
+
+              // ---------- History ----------
+              private fun loadHist(): JSONArray = try {
+                  JSONArray(getSharedPreferences("easydl", MODE_PRIVATE).getString("hist", "[]") ?: "[]")
+              } catch (e: Exception) { JSONArray() }
+
+              private fun saveHist(a: JSONArray) {
+                  getSharedPreferences("easydl", MODE_PRIVATE).edit().putString("hist", a.toString()).apply()
+              }
+
+              private fun addHist(link: String, src: String, state: String) {
+                  if (link.isEmpty()) return
+                  runOnUiThread {
+                      val old = loadHist()
+                      val a = JSONArray()
+                      a.put(JSONObject().put("link", link).put("src", src).put("state", state.take(160)).put("time", System.currentTimeMillis()))
+                      for (i in 0 until minOf(old.length(), 199)) a.put(old.opt(i))
+                      saveHist(a)
+                      if (page == 2) refreshHist()
+                  }
+              }
+
+              private fun refreshHist() {
+                  histList.removeAllViews()
+                  val a = loadHist()
+                  if (a.length() == 0) {
+                      histList.addView(TextView(this).apply { text = "No history yet."; setPadding(0, dp(12), 0, 0) })
+                      return
+                  }
+                  val fmt = java.text.SimpleDateFormat("d MMM yyyy, HH:mm", java.util.Locale.getDefault())
+                  for (i in 0 until a.length()) {
+                      val o = a.optJSONObject(i) ?: continue
+                      val link = o.optString("link")
+                      val st = o.optString("state")
+                      val good = st.startsWith("Done")
+                      histList.addView(LinearLayout(this).apply {
+                          gravity = Gravity.CENTER_VERTICAL
+                          setPadding(0, dp(8), 0, dp(8))
+                          addView(LinearLayout(this@MainActivity).apply {
+                              orientation = LinearLayout.VERTICAL
+                              addView(TextView(this@MainActivity).apply { text = o.optString("src"); setTextColor(fgCol); textSize = 15f })
+                              addView(TextView(this@MainActivity).apply {
+                                  text = (if (good) "✓ " else "✕ ") + st
+                                  setTextColor(if (good) Color.rgb(46, 160, 67) else Color.rgb(211, 47, 47))
+                                  textSize = 13f
+                              })
+                              addView(TextView(this@MainActivity).apply { text = link; setTextColor(subCol); textSize = 12f; maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END })
+                              addView(TextView(this@MainActivity).apply { text = fmt.format(java.util.Date(o.optLong("time"))); setTextColor(subCol); textSize = 12f })
+                          }, LinearLayout.LayoutParams(0, -2, 1f))
+                          addView(Button(this@MainActivity).apply {
+                              text = "Retry"
+                              setOnClickListener {
+                                  showPage(0)
+                                  lastLink = ""
+                                  start(link)
+                              }
+                          })
+                      }, LinearLayout.LayoutParams(-1, -2))
+                  }
               }
 
               private fun askPermissions() {
@@ -883,85 +1015,134 @@ jobs:
 
               // ---------- My files ----------
               private fun queryFiles(): List<FileItem> {
-                  val out = ArrayList<Pair<Long, FileItem>>()
+                  val out = ArrayList<FileItem>()
                   for (pass in 0..1) {
                       val col = if (pass == 0) MediaStore.Images.Media.EXTERNAL_CONTENT_URI else MediaStore.Video.Media.EXTERNAL_CONTENT_URI
-                      val proj = arrayOf(android.provider.BaseColumns._ID, MediaStore.MediaColumns.DATE_ADDED)
+                      val proj = arrayOf(android.provider.BaseColumns._ID, MediaStore.MediaColumns.DATE_ADDED, MediaStore.MediaColumns.DISPLAY_NAME,
+                          MediaStore.MediaColumns.SIZE, MediaStore.MediaColumns.DURATION)
                       try {
                           contentResolver.query(col, proj, MediaStore.MediaColumns.RELATIVE_PATH + " LIKE ?", arrayOf("%EasyDownloader%"), null)?.use { c ->
                               while (c.moveToNext()) {
-                                  out.add(Pair(c.getLong(1), FileItem(android.content.ContentUris.withAppendedId(col, c.getLong(0)), pass == 1)))
+                                  out.add(FileItem(android.content.ContentUris.withAppendedId(col, c.getLong(0)), pass == 1,
+                                      c.getString(2) ?: "", c.getLong(3), c.getLong(1), c.getLong(4)))
                               }
                           }
                       } catch (e: Exception) {
                       }
                   }
-                  return out.sortedByDescending { it.first }.map { it.second }
+                  return out.sortedByDescending { it.date }
+              }
+
+              // the account / site the file came from (first part of the file name)
+              private fun srcLabel(name: String): String {
+                  val first = name.substringBefore("_")
+                  return if (first.isEmpty() || first == "easydl") "Unknown source" else first
+              }
+
+              private fun mbText(b: Long): String = if (b >= 1048576) String.format(java.util.Locale.US, "%.1f MB", b / 1048576.0) else "${b / 1024} KB"
+
+              private fun durText(ms: Long): String {
+                  val t = ms / 1000
+                  return if (t >= 3600) String.format(java.util.Locale.US, "%d:%02d:%02d", t / 3600, t % 3600 / 60, t % 60)
+                      else String.format(java.util.Locale.US, "%d:%02d", t / 60, t % 60)
               }
 
               private fun refreshFiles() {
                   Thread {
                       val all = queryFiles()
                       runOnUiThread {
-                          filesGrid.removeAllViews()
-                          selViews.clear()
+                          allFiles = all
                           selected.retainAll(all.map { it.uri }.toSet())
                           if (selected.isEmpty()) exitSel()
-                          filesInfo.text = if (all.isEmpty()) "Nothing downloaded yet. Swipe right to go back."
-                              else "${all.size} file(s) in album EasyDownloader. Tap to open, press and hold to select."
-                          val gap = dp(4)
-                          val cw = (resources.displayMetrics.widthPixels - dp(32) - gap * 6) / 3
-                          val ch = cw * 4 / 3
-                          all.take(300).forEachIndexed { i, f ->
-                              val cell = FrameLayout(this)
-                              val img = ImageView(this).apply {
-                                  scaleType = ImageView.ScaleType.CENTER_CROP
-                                  setBackgroundColor(Color.LTGRAY)
-                              }
-                              cell.addView(img, FrameLayout.LayoutParams(-1, -1))
-                              if (f.video) cell.addView(TextView(this).apply {
-                                  text = "▶"
-                                  textSize = 12f
-                                  setTextColor(Color.WHITE)
-                                  setBackgroundColor(Color.argb(150, 0, 0, 0))
-                                  setPadding(dp(6), dp(2), dp(6), dp(2))
-                              }, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.START))
-                              val mark = TextView(this).apply {
-                                  text = "✓"
-                                  textSize = 28f
-                                  gravity = Gravity.CENTER
-                                  setTextColor(Color.rgb(46, 160, 67))
-                                  setBackgroundColor(Color.argb(150, 255, 255, 255))
-                                  visibility = if (f.uri in selected) View.VISIBLE else View.GONE
-                              }
-                              cell.addView(mark, FrameLayout.LayoutParams(-1, -1))
-                              selViews[f.uri] = mark
-                              cell.setOnClickListener { if (selMode) toggleSel(f.uri) else openViewer(f) }
-                              cell.setOnLongClickListener {
-                                  selMode = true
-                                  toggleSel(f.uri)
-                                  true
-                              }
-                              filesGrid.addView(cell, GridLayout.LayoutParams().apply {
-                                  width = cw
-                                  height = ch
-                                  setMargins(gap, gap, gap, gap)
-                              })
-                              thumbPool.execute {
-                                  try {
-                                      val b = contentResolver.loadThumbnail(f.uri, android.util.Size(cw, ch), null)
-                                      runOnUiThread { img.setImageBitmap(b) }
-                                  } catch (e: Exception) {
-                                  }
-                              }
-                          }
+                          renderFiles()
                       }
                   }.start()
               }
 
+              private fun renderFiles() {
+                  if (!::filesList.isInitialized) return
+                  filesList.removeAllViews()
+                  selViews.clear()
+                  val q = searchBox.text.toString().trim().lowercase()
+                  var shown = allFiles.filter { f ->
+                      (fType == 0 || (fType == 1 && !f.video) || (fType == 2 && f.video)) &&
+                          (q.isEmpty() || f.name.lowercase().contains(q) || srcLabel(f.name).lowercase().contains(q))
+                  }
+                  shown = when (fSort) {
+                      1 -> shown.sortedByDescending { it.size }
+                      2 -> shown.sortedBy { it.size }
+                      else -> shown
+                  }
+                  filesInfo.text = if (allFiles.isEmpty()) "Nothing downloaded yet."
+                      else "${shown.size} of ${allFiles.size} file(s). Tap to open, press and hold to select."
+                  val fmt = java.text.SimpleDateFormat("d MMM yyyy, HH:mm", java.util.Locale.getDefault())
+                  val th = dp(72)
+                  for (f in shown.take(500)) {
+                      val img = ImageView(this).apply {
+                          scaleType = ImageView.ScaleType.CENTER_CROP
+                          setBackgroundColor(Color.LTGRAY)
+                      }
+                      val thumb = FrameLayout(this)
+                      thumb.addView(img, FrameLayout.LayoutParams(-1, -1))
+                      if (f.video) thumb.addView(TextView(this).apply {
+                          text = "▶"
+                          textSize = 11f
+                          setTextColor(Color.WHITE)
+                          setBackgroundColor(Color.argb(150, 0, 0, 0))
+                          setPadding(dp(4), dp(1), dp(4), dp(1))
+                      }, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.START))
+                      val mark = TextView(this).apply {
+                          text = "✓"
+                          textSize = 22f
+                          setTextColor(Color.rgb(46, 160, 67))
+                          setPadding(dp(8), 0, dp(4), 0)
+                          visibility = if (f.uri in selected) View.VISIBLE else View.GONE
+                      }
+                      val row = LinearLayout(this).apply {
+                          gravity = Gravity.CENTER_VERTICAL
+                          setPadding(0, dp(6), 0, dp(6))
+                          addView(thumb, LinearLayout.LayoutParams(th, th))
+                          addView(LinearLayout(this@MainActivity).apply {
+                              orientation = LinearLayout.VERTICAL
+                              setPadding(dp(12), 0, 0, 0)
+                              addView(TextView(this@MainActivity).apply { text = srcLabel(f.name); textSize = 15f; setTextColor(fgCol); maxLines = 1 })
+                              addView(TextView(this@MainActivity).apply {
+                                  text = (if (f.video) "Video" else "Photo") + (if (f.video && f.dur > 0) " · " + durText(f.dur) else "") + " · " + mbText(f.size)
+                                  textSize = 13f
+                                  setTextColor(subCol)
+                              })
+                              addView(TextView(this@MainActivity).apply { text = fmt.format(java.util.Date(f.date * 1000)); textSize = 12f; setTextColor(subCol) })
+                          }, LinearLayout.LayoutParams(0, -2, 1f))
+                          addView(mark)
+                          setBackgroundColor(if (f.uri in selected) hiCol else Color.TRANSPARENT)
+                          setOnClickListener { if (selMode) toggleSel(f.uri) else openViewer(f) }
+                          setOnLongClickListener {
+                              selMode = true
+                              toggleSel(f.uri)
+                              true
+                          }
+                      }
+                      selViews[f.uri] = row
+                      filesList.addView(row, LinearLayout.LayoutParams(-1, -2))
+                      thumbPool.execute {
+                          try {
+                              val b = contentResolver.loadThumbnail(f.uri, android.util.Size(th, th), null)
+                              runOnUiThread { img.setImageBitmap(b) }
+                          } catch (e: Exception) {
+                          }
+                      }
+                  }
+              }
+
+              private fun markRow(u: Uri) {
+                  val row = selViews[u] as? LinearLayout ?: return
+                  row.setBackgroundColor(if (u in selected) hiCol else Color.TRANSPARENT)
+                  row.getChildAt(row.childCount - 1).visibility = if (u in selected) View.VISIBLE else View.GONE
+              }
+
               private fun toggleSel(u: Uri) {
                   if (!selected.remove(u)) selected.add(u)
-                  selViews[u]?.visibility = if (u in selected) View.VISIBLE else View.GONE
+                  markRow(u)
                   if (selected.isEmpty()) exitSel()
                   else {
                       selMode = true
@@ -972,8 +1153,9 @@ jobs:
 
               private fun exitSel() {
                   selMode = false
+                  val was = ArrayList(selected)
                   selected.clear()
-                  for (v in selViews.values) v.visibility = View.GONE
+                  for (u in was) markRow(u)
                   if (::selBar.isInitialized) selBar.visibility = View.GONE
               }
 
@@ -1223,6 +1405,7 @@ jobs:
               private fun fail(my: Int, s: String) = runOnUiThread {
                   if (my == gen) {
                       pollStop = true
+                      addHist(lastLink, srcName, "Failed: $s")
                       lastLink = ""
                       busy(false)
                       closeWeb()
@@ -1403,6 +1586,7 @@ jobs:
                           if (plat != "tt") view.evaluateJavascript(HOOK, null)
                       }
                   }
+                  if (plat == "tt") w.settings.mediaPlaybackRequiresUserGesture = false
                   if (big) {
                       webBox.addView(w, FrameLayout.LayoutParams(-1, -1))
                       webBox.addView(playerBox, FrameLayout.LayoutParams(-1, -1))
@@ -1427,8 +1611,29 @@ jobs:
                   }
               }
 
+              private fun clean(s: String): String = s.replace(Regex("[^A-Za-z0-9@.\\-]"), "-").replace(Regex("-+"), "-").trim('-').take(60)
+
+              private fun srcOf(link: String): String {
+                  val l = link.lowercase()
+                  val at = Regex("/@([A-Za-z0-9._]+)").find(link)?.groupValues?.get(1)
+                  return when {
+                      l.contains("tiktok.com") -> "tiktok" + (if (at != null) "-@$at" else "")
+                      l.contains("threads.") -> "threads" + (if (at != null) "-@$at" else "")
+                      l.contains("instagram.com") -> "instagram" + (Regex("instagram\\.com/(?:stories/)?([A-Za-z0-9._]+)/").find(link)?.groupValues?.get(1)
+                          ?.takeIf { it !in setOf("p", "reel", "reels", "tv", "stories", "s", "highlights") }?.let { "-@$it" } ?: "")
+                      l.contains("youtube.com") || l.contains("youtu.be") -> "youtube"
+                      l.contains("facebook.com") || l.contains("fb.watch") || l.contains("fb.com") -> "facebook"
+                      Regex("^https?://(?:[\\w-]+\\.)*(?:x|twitter)\\.com/").containsMatchIn(l) ->
+                          "x" + (Regex("(?:x|twitter)\\.com/([A-Za-z0-9_]+)/status").find(link)?.groupValues?.get(1)?.takeIf { it != "i" }?.let { "-@$it" } ?: "")
+                      else -> (try { URL(link).host.removePrefix("www.") } catch (e: Exception) { "web" })
+                  }
+              }
+
+              private fun pre(): String = (dlSrc.get() ?: "easydl") + "_"
+
               private fun start(link: String) {
                   closeWeb()
+                  srcName = clean(srcOf(link))
                   lastLink = link
                   quiet = true
                   input.setText(link)
@@ -1652,6 +1857,7 @@ jobs:
                   val url = w.url ?: ""
                   val docs = synchronized(captured) { ArrayList(captured) }
                   var found: List<Media> = emptyList()
+                  if ((plat == "tt" || plat == "th") && url.contains("/@")) srcName = clean(srcOf(url))
                   when (plat) {
                       "tt" -> {
                           val id = Regex("/(?:video|photo)/(\\d+)").find(url)?.groupValues?.get(1) ?: ""
@@ -1764,6 +1970,17 @@ jobs:
                       if (plat == "th" && !thLoginDone && !hasCookie("https://www.threads.com", "sessionid=")) { showLogin("Threads", lastLink); return }
                       if (plat == "ig" && !hasCookie("https://www.instagram.com", "sessionid=")) { showLogin("Instagram", lastLink); return }
                       if (plat == "fb" && !hasCookie("https://www.facebook.com", "c_user=")) { showLogin("Facebook", lastLink); return }
+                      if (plat == "tt") {
+                          // last try: the video the page itself played
+                          val net = synchronized(netVideos) { ArrayList(netVideos) }
+                          if (net.isNotEmpty() && !url.contains("/photo/")) {
+                              show(listOf(Media(net[0], true, "", "https://www.tiktok.com/", alts = net.drop(1).take(5))))
+                              return
+                          }
+                          val it0 = docs.asSequence().flatMap { jsonRoots(it).asSequence() }.mapNotNull { findItem(it, "") }.firstOrNull()
+                          fail(my, "TikTok did not give a video link for this post. It may be private, age-restricted or removed. (video: ${keyList(it0?.optJSONObject("video"))})")
+                          return
+                      }
                       fail(my, "Nothing found. url=$url; data=${docs.size}; ${kinds(docs)}")
                       return
                   }
@@ -2040,6 +2257,8 @@ jobs:
                       }
                       return out
                   }
+                  val au = item.optJSONObject("author")?.optString("uniqueId") ?: item.optString("author")
+                  if (au.isNotEmpty() && !au.startsWith("{")) srcName = clean("tiktok-@$au")
                   val v = item.optJSONObject("video") ?: return out
                   val h264 = ArrayList<Pair<Long, String>>()
                   val other = ArrayList<Pair<Long, String>>()
@@ -2058,6 +2277,8 @@ jobs:
                   v.optString("downloadAddr").takeIf { it.startsWith("http") }?.let { urls.add(it) }
                   v.optString("playAddr").takeIf { it.startsWith("http") }?.let { urls.add(it) }
                   if (urls.isEmpty()) other.sortedByDescending { it.first }.forEach { urls.add(it.second) }
+                  // newer TikTok pages keep the links in other places: take every video link inside the video data
+                  if (urls.isEmpty()) urls.addAll(videoUrls(v, setOf("cover", "originCover", "dynamicCover", "shareCover", "subtitleInfos", "claInfo")))
                   val all = urls.distinct().take(6)
                   val cover = v.optString("cover").ifEmpty { v.optString("originCover") }
                   // the app later measures every candidate and downloads the biggest file (highest quality)
@@ -2401,7 +2622,11 @@ jobs:
                               continue
                           }
                           val opts = buildYt(id, sd, c.ua)
-                          if (opts.isNotEmpty()) return Pair(opts, j.optJSONObject("videoDetails")?.optString("title") ?: "")
+                          if (opts.isNotEmpty()) {
+                              val au = j.optJSONObject("videoDetails")?.optString("author") ?: ""
+                              if (au.isNotEmpty()) srcName = clean("youtube-$au")
+                              return Pair(opts, j.optJSONObject("videoDetails")?.optString("title") ?: "")
+                          }
                           if (reason.isEmpty()) reason = "no direct download formats for this video"
                       } catch (e: Exception) {
                           if (reason.isEmpty()) reason = e.message ?: "network error"
@@ -2655,6 +2880,8 @@ jobs:
               // downloads keep going in the background; you can switch to other apps
               private fun runDownloads(sel: List<Media>) {
                   val g = gen
+                  val src = srcName
+                  val link = lastLink.ifEmpty { input.text.toString() }
                   if (active.getAndIncrement() == 0) {
                       try { startForegroundService(Intent(this, DlService::class.java)) } catch (e: Exception) { }
                   }
@@ -2664,6 +2891,7 @@ jobs:
                   Thread {
                       dlGen.set(g)
                       dlTok.set(tok)
+                      dlSrc.set(src)
                       var ok = 0
                       var err = ""
                       var stopped = false
@@ -2687,6 +2915,7 @@ jobs:
                               else if (ok == sel.size) "Done: $ok of ${sel.size} saved (album EasyDownloader)." + (if (warn.isNotEmpty()) " Note: $warn" else "")
                               else "Done: $ok of ${sel.size} saved. Error: $err"
                           lastNote = 0L
+                          addHist(link, src, if (stopped) "Cancelled" else if (ok == sel.size) "Done: $ok file(s) saved" else "Failed: $err")
                           if (active.decrementAndGet() == 0) {
                               try { stopService(Intent(this, DlService::class.java)) } catch (e: Exception) { }
                               try { (getSystemService(NOTIFICATION_SERVICE) as android.app.NotificationManager).cancel(DlService.ID) } catch (e: Exception) { }
@@ -2812,7 +3041,7 @@ jobs:
               }
 
               private fun saveWeb(m: Media, n: Int) {
-                  val item = newItem("easydl_web_${System.currentTimeMillis()}_$n.mp4", "video/mp4", true)
+                  val item = newItem("${pre()}web_${System.currentTimeMillis()}_$n.mp4", "video/mp4", true)
                   try {
                       val total = contentResolver.openOutputStream(item.first)!!.use { fetchResume(m.url, m.ref, m.gua, it) }
                       if (total < 300000) throw IOException("The file is too small to be the real video")
@@ -2837,7 +3066,7 @@ jobs:
                       "webp" -> "image/webp"
                       else -> "image/jpeg"
                   }
-                  val item = newItem("easydl_${System.currentTimeMillis()}_$n.$ext", mime, m.video)
+                  val item = newItem("${pre()}${System.currentTimeMillis()}_$n.$ext", mime, m.video)
                   try {
                       contentResolver.openOutputStream(item.first)!!.use { o ->
                           if (m.ua.isNotEmpty()) fetchChunks(url, o, m.ua, m.size, "Video", m.ytId, m.itag)
@@ -3025,7 +3254,7 @@ jobs:
                       }
                       if (aurl.isNotEmpty()) fetchPl(parseMedia(aurl, ref), ref, af, "Audio")
                       say("Saving…")
-                      val item = newItem("easydl_web_${System.currentTimeMillis()}_$n.mp4", "video/mp4", true)
+                      val item = newItem("${pre()}web_${System.currentTimeMillis()}_$n.mp4", "video/mp4", true)
                       var ok = false
                       try {
                           contentResolver.openFileDescriptor(item.first, "rw")!!.use { remux(vf.path, if (aurl.isNotEmpty()) af.path else "", it.fileDescriptor) }
@@ -3039,7 +3268,7 @@ jobs:
                       } else {
                           // could not convert: keep the raw stream so nothing is lost
                           val fmp4 = vp.map.isNotEmpty()
-                          writeBytes(vf.readBytes(), "easydl_web_${System.currentTimeMillis()}_$n." + (if (fmp4) "mp4" else "ts"), if (fmp4) "video/mp4" else "video/mp2t", true)
+                          writeBytes(vf.readBytes(), "${pre()}web_${System.currentTimeMillis()}_$n." + (if (fmp4) "mp4" else "ts"), if (fmp4) "video/mp4" else "video/mp2t", true)
                       }
                   } finally {
                       vf.delete()
@@ -3158,7 +3387,7 @@ jobs:
               private fun saveLive(m: Media, n: Int) {
                   val b = readAll(pickBest(m), m.ref)
                   if (kindOf(b, minOf(16, b.size)) == "audio") throw IOException("This clip is sound only, not a video")
-                  writeBytes(b, "easydl_live_${System.currentTimeMillis()}_$n.mp4", "video/mp4", true)
+                  writeBytes(b, "${pre()}live_${System.currentTimeMillis()}_$n.mp4", "video/mp4", true)
               }
 
               private class Cur(var pos: Long = 0L, var pct: Int = -1)
@@ -3245,7 +3474,7 @@ jobs:
                       af.outputStream().use { fetchChunks(m.audio, it, m.ua, m.asize, "Audio", m.ytId, m.aitag) }
                       say("Merging video and audio…")
                       val ext = if (m.webm) "webm" else "mp4"
-                      val item = newItem("easydl_yt_${System.currentTimeMillis()}_$n.$ext", if (m.webm) "video/webm" else "video/mp4", true)
+                      val item = newItem("${pre()}yt_${System.currentTimeMillis()}_$n.$ext", if (m.webm) "video/webm" else "video/mp4", true)
                       try {
                           contentResolver.openFileDescriptor(item.first, "rw")!!.use { mux(vf.path, af.path, it.fileDescriptor, m.webm) }
                       } catch (e: Exception) {
