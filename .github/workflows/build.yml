@@ -52,8 +52,8 @@ jobs:
               applicationId 'com.pribadi.easydl'
               minSdk 29
               targetSdk 34
-              versionCode 28
-              versionName '6.4'
+              versionCode 29
+              versionName '6.5'
             }
             compileOptions {
               sourceCompatibility JavaVersion.VERSION_17
@@ -534,7 +534,7 @@ jobs:
                       }
                   })
                   status = TextView(this).apply {
-                      text = "Easy Downloader 6.4\nCopy a video link from any website (Threads, X, TikTok, Facebook, Instagram, YouTube or others), then open this app. You can also paste it in the box above.\nSwipe left to see your downloaded files."
+                      text = "Easy Downloader 6.5\nCopy a video link from any website (Threads, X, TikTok, Facebook, Instagram, YouTube or others), then open this app. You can also paste it in the box above.\nSwipe left to see your downloaded files."
                       setPadding(0, dp(8), 0, dp(8))
                   }
                   list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -1931,9 +1931,12 @@ jobs:
               }
 
               // ---------- Threads / TikTok / Instagram posts / Facebook (through a hidden browser) ----------
+              private var ttMobile = false
+
               private fun startWeb(link: String, my: Int) {
                   say("Opening post… (up to 25 seconds)")
-                  newWeb(my, UA).loadUrl(link)
+                  ttMobile = false
+                  newWeb(my, if (plat == "tt") UAD else UA).loadUrl(link)
                   poll(my, 0)
               }
 
@@ -1961,6 +1964,13 @@ jobs:
                           val id = Regex("/(?:video|photo)/(\\d+)").find(url)?.groupValues?.get(1) ?: ""
                           if (id.isNotEmpty()) found = parseTT(docs, id)
                           if (found.isEmpty() && tick >= 10) found = parseTT(docs, "")
+                          if (found.isEmpty() && tick == 9 && docs.isEmpty() && !ttMobile) {
+                              // desktop page gave nothing: try the phone page
+                              ttMobile = true
+                              newWeb(my, UA).loadUrl(lastLink)
+                              handler.postDelayed({ poll(my, 3) }, 1000)
+                              return
+                          }
                           // the page data has the post but no video link (newer TikTok pages): use the second source right away
                           if (found.isEmpty() && tick >= 6 && url.contains("/video/") && docs.any { it.contains("itemStruct") }) {
                               val net = synchronized(netVideos) { ArrayList(netVideos) }
@@ -2301,9 +2311,12 @@ jobs:
                       val measured = ArrayList<Media>()
                       val sizes = HashSet<Long>()
                       for (m in opts) {
-                          val sz = try { sizeOf(if (m.url.contains("tikwm.com")) finalUrl(m.url) else m.url, m.ref) } catch (e: Exception) { -1L }
+                          val fu = if (m.url.contains("tikwm.com")) (try { finalUrl(m.url) } catch (e: Exception) { m.url }) else m.url
+                          val tk = try { tracksAt(fu, m.ref) } catch (e: Exception) { null }
+                          val sz = tk?.size ?: -1L
                           val real = if (sz > 0) sz else m.size
                           if (real > 0 && !sizes.add(real)) continue
+                          if (tk != null && tk.known && !tk.a) continue
                           val base = m.label.replace(Regex(" · [0-9]+ MB"), "")
                           val lab = if (real > 0) base.substringBefore(" · no watermark") + mb(real) + (if (base.contains("no watermark")) " · no watermark" else "") else base
                           measured.add(Media(m.url, true, m.thumb, m.ref, alts = m.alts, size = real, itag = m.itag, label = lab))
