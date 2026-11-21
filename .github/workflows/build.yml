@@ -52,8 +52,8 @@ jobs:
               applicationId 'com.pribadi.easydl'
               minSdk 29
               targetSdk 34
-              versionCode 31
-              versionName '6.7'
+              versionCode 32
+              versionName '6.8'
             }
             compileOptions {
               sourceCompatibility JavaVersion.VERSION_17
@@ -373,6 +373,7 @@ jobs:
               private var pollStop = false
               private var thRetried = false
               private var thEmbedTried = false
+              private var igRescueTried = false
               private var thLoginDone = false
               private var loginSite = ""
               private var fbLast = 0
@@ -534,7 +535,7 @@ jobs:
                       }
                   })
                   status = TextView(this).apply {
-                      text = "Easy Downloader 6.7\nCopy a video link from any website (Threads, X, TikTok, Facebook, Instagram, YouTube or others), then open this app. You can also paste it in the box above.\nSwipe left to see your downloaded files."
+                      text = "Easy Downloader 6.8\nCopy a video link from any website (Threads, X, TikTok, Facebook, Instagram, YouTube or others), then open this app. You can also paste it in the box above.\nSwipe left to see your downloaded files."
                       setPadding(0, dp(8), 0, dp(8))
                   }
                   list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -1747,6 +1748,7 @@ jobs:
                   pollStop = false
                   thRetried = false
                   thEmbedTried = false
+                  igRescueTried = false
                   fbLast = 0
                   fbStall = 0
                   vetting = false
@@ -2079,7 +2081,7 @@ jobs:
                       }
                   }
                   if ((plat == "ig" || plat == "fb") && tick >= 4 && url.contains("login")) {
-                      if (plat == "ig" && !hasCookie("https://www.instagram.com", "sessionid=")) { showLogin("Instagram", lastLink); return }
+                      if (plat == "ig" && !hasCookie("https://www.instagram.com", "sessionid=")) { igRescue(my); return }
                       if (plat == "fb" && !hasCookie("https://www.facebook.com", "c_user=")) { showLogin("Facebook", lastLink); return }
                   }
                   if (tick >= (if (plat == "gen") 60 else if (plat == "fb" && fbTotal > 0) 30 else 25)) {
@@ -2090,7 +2092,7 @@ jobs:
                           return
                       }
                       if (plat == "th" && !thLoginDone && !hasCookie("https://www.threads.com", "sessionid=")) { showLogin("Threads", lastLink); return }
-                      if (plat == "ig" && !hasCookie("https://www.instagram.com", "sessionid=")) { showLogin("Instagram", lastLink); return }
+                      if (plat == "ig" && !hasCookie("https://www.instagram.com", "sessionid=")) { igRescue(my); return }
                       if (plat == "fb" && !hasCookie("https://www.facebook.com", "c_user=")) { showLogin("Facebook", lastLink); return }
                       if (plat == "tt") {
                           // last try: the video the page itself played
@@ -2249,6 +2251,114 @@ jobs:
               }
 
               // last resort for Threads: read the public embed page without JavaScript
+              // Instagram asked to log in: first try the ways that work without an account (post data and the embed page)
+              private fun igRescue(my: Int) {
+                  val link = lastLink
+                  if (igRescueTried) { showLogin("Instagram", link); return }
+                  igRescueTried = true
+                  pollStop = true
+                  say("Instagram asked to log in. Trying without login…")
+                  val code = Regex("instagram\\.com/(?:[^/?#]+/)?(?:p|reels?|tv)/([A-Za-z0-9_-]+)").find(link)?.groupValues?.get(1)
+                  Thread {
+                      var r: Pair<String, List<Media>> = Pair("", emptyList())
+                      if (code != null) {
+                          r = try { igGql(code) } catch (e: Exception) { Pair("", emptyList()) }
+                          if (r.second.isEmpty()) r = try { igEmbed(code) } catch (e: Exception) { Pair("", emptyList()) }
+                      }
+                      runOnUiThread {
+                          if (my != gen) return@runOnUiThread
+                          if (r.second.isEmpty()) { showLogin("Instagram", link); return@runOnUiThread }
+                          if (r.first.isNotEmpty()) setSrc(r.first, "instagram")
+                          if (r.second.any { it.video }) vetThen(my, r.second) else show(r.second)
+                      }
+                  }.start()
+              }
+
+              private fun igGql(code: String): Pair<String, List<Media>> {
+                  val vars = "{\"shortcode\":\"$code\",\"fetch_tagged_user_count\":null,\"hoisted_comment_id\":null,\"hoisted_reply_id\":null}"
+                  val u = "https://www.instagram.com/graphql/query/?doc_id=8845758582119845&variables=" + URLEncoder.encode(vars, "UTF-8")
+                  val ck = CookieManager.getInstance().getCookie("https://www.instagram.com") ?: ""
+                  val csrf = Regex("csrftoken=([^;]+)").find(ck)?.groupValues?.get(1) ?: ""
+                  val c = URL(u).openConnection() as HttpURLConnection
+                  c.setRequestProperty("User-Agent", UAD)
+                  c.setRequestProperty("X-IG-App-ID", "936619743392459")
+                  c.setRequestProperty("X-ASBD-ID", "129477")
+                  c.setRequestProperty("X-IG-WWW-Claim", "0")
+                  c.setRequestProperty("X-Requested-With", "XMLHttpRequest")
+                  c.setRequestProperty("X-CSRFToken", csrf)
+                  c.setRequestProperty("Referer", "https://www.instagram.com/p/$code/")
+                  c.setRequestProperty("Origin", "https://www.instagram.com")
+                  c.setRequestProperty("Accept", "*/*")
+                  if (ck.isNotEmpty()) c.setRequestProperty("Cookie", ck)
+                  c.connectTimeout = 20000
+                  c.readTimeout = 30000
+                  if (c.responseCode >= 400) return Pair("", emptyList())
+                  val j = JSONObject(c.inputStream.bufferedReader().readText())
+                  val n = j.optJSONObject("data")?.let { it.optJSONObject("xdt_shortcode_media") ?: it.optJSONObject("shortcode_media") }
+                      ?: return Pair("", emptyList())
+                  return igNodes(n)
+              }
+
+              private fun igEmbed(code: String): Pair<String, List<Media>> {
+                  val html = open("https://www.instagram.com/p/$code/embed/captioned/", "", UA).inputStream.bufferedReader().readText()
+                  val raw = Regex("\"contextJSON\":\"((?:[^\"\\\\]|\\\\.)*)\"").find(html)?.groupValues?.get(1)
+                  if (raw != null) {
+                      try {
+                          val ctx = JSONObject(JSONObject("{\"c\":\"$raw\"}").getString("c"))
+                          val n = findShortcode(ctx)
+                          if (n != null) { val r = igNodes(n); if (r.second.isNotEmpty()) return r }
+                      } catch (e: Exception) { }
+                  }
+                  // last resort: the pictures/videos written in the embed page itself
+                  val clean = html.replace("&amp;", "&").replace("\\/", "/").replace("\\u0026", "&")
+                  val user = Regex("\"username\":\"([A-Za-z0-9._]+)\"").find(clean)?.groupValues?.get(1) ?: ""
+                  val out = LinkedHashMap<String, Media>()
+                  for (m in Regex("https://[^\"'\\s<>\\\\]+").findAll(clean)) {
+                      val u = m.value
+                      val l = u.lowercase()
+                      if (!(l.contains("cdninstagram.com") || l.contains("fbcdn.net"))) continue
+                      if (l.contains("t51.2885-19") || l.contains("s150x150") || l.contains("s320x320") || l.contains("p150x150")) continue
+                      val name = u.substringBefore("?").substringAfterLast("/")
+                      if (l.contains(".mp4")) out.putIfAbsent(name, Media(u, true, "", "https://www.instagram.com/"))
+                      else if (l.contains(".jpg") || l.contains(".webp") || l.contains(".heic")) out.putIfAbsent(name, Media(u, false, u, "https://www.instagram.com/"))
+                  }
+                  return Pair(user, out.values.take(20).toList())
+              }
+
+              private fun findShortcode(o: Any?): JSONObject? {
+                  if (o is JSONObject) {
+                      if (o.has("shortcode") && (o.has("display_url") || o.has("video_url"))) return o
+                      val ks = o.keys()
+                      while (ks.hasNext()) { findShortcode(o.opt(ks.next()))?.let { return it } }
+                  } else if (o is JSONArray) {
+                      for (i in 0 until o.length()) findShortcode(o.opt(i))?.let { return it }
+                  }
+                  return null
+              }
+
+              // post data (graphql style) -> files: videos (with their sound file when given separately) and full-size photos
+              private fun igNodes(n: JSONObject): Pair<String, List<Media>> {
+                  val user = n.optJSONObject("owner")?.optString("username") ?: ""
+                  val edges = n.optJSONObject("edge_sidecar_to_children")?.optJSONArray("edges")
+                  val nodes = ArrayList<JSONObject>()
+                  if (edges != null && edges.length() > 0) {
+                      for (i in 0 until edges.length()) edges.optJSONObject(i)?.optJSONObject("node")?.let { nodes.add(it) }
+                  } else nodes.add(n)
+                  val out = ArrayList<Media>()
+                  val ref = "https://www.instagram.com/"
+                  for (x in nodes) {
+                      val photo = best(x.optJSONArray("display_resources"))?.takeIf { it.isNotEmpty() } ?: x.optString("display_url")
+                      val vu = x.optString("video_url")
+                      if (x.optBoolean("is_video") && vu.startsWith("http")) {
+                          val man = x.optJSONObject("dash_info")?.optString("video_dash_manifest") ?: ""
+                          val d = if (man.isNotEmpty()) dashPair(man) else null
+                          if (d != null) out.add(Media(d.first, true, photo, ref, audio = d.second, ua = UA, label = "dash", alts = listOf(vu)))
+                          else out.add(Media(vu, true, photo, ref))
+                      } else if (photo.startsWith("http")) out.add(Media(photo, false, photo, ref))
+                  }
+                  return Pair(user, out)
+              }
+
               private fun thEmbed(user: String, code: String): List<Media> {
                   val html = try {
                       open("https://www.threads.com/@$user/post/$code/embed/", "", UAD).inputStream.bufferedReader().readText()
