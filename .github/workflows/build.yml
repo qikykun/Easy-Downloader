@@ -52,8 +52,8 @@ jobs:
               applicationId 'com.pribadi.easydl'
               minSdk 29
               targetSdk 34
-              versionCode 21
-              versionName '5.7'
+              versionCode 22
+              versionName '5.8'
             }
             compileOptions {
               sourceCompatibility JavaVersion.VERSION_17
@@ -533,7 +533,7 @@ jobs:
                       }
                   })
                   status = TextView(this).apply {
-                      text = "Easy Downloader 5.7\nCopy a video link from any website (Threads, X, TikTok, Facebook, Instagram, YouTube or others), then open this app. You can also paste it in the box above.\nSwipe left to see your downloaded files."
+                      text = "Easy Downloader 5.8\nCopy a video link from any website (Threads, X, TikTok, Facebook, Instagram, YouTube or others), then open this app. You can also paste it in the box above.\nSwipe left to see your downloaded files."
                       setPadding(0, dp(8), 0, dp(8))
                   }
                   list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -2355,7 +2355,13 @@ jobs:
                       var live = 0
                       for (i in 0 until imgs.length()) {
                           val o = imgs.optJSONObject(i) ?: continue
-                          val u = o.optJSONObject("imageURL")?.optJSONArray("urlList")?.optString(0) ?: ""
+                          val ul = o.optJSONObject("imageURL")?.optJSONArray("urlList")
+                          var u = ""
+                          if (ul != null) for (k in 0 until ul.length()) {
+                              val c = ul.optString(k)
+                              if (c.startsWith("http") && !c.lowercase().contains("watermark")) { u = c; break }
+                          }
+                          if (u.isEmpty()) u = ul?.optString(0) ?: ""
                           val vs = videoUrls(o, emptySet())
                           if (vs.isNotEmpty()) {
                               out.add(Media(vs[0], true, u, ref, live = true, alts = vs.drop(1), still = u))
@@ -2393,11 +2399,13 @@ jobs:
                   }
                   val urls = ArrayList<String>()
                   h264.sortedByDescending { it.first }.forEach { urls.add(it.second) }
-                  v.optString("downloadAddr").takeIf { it.startsWith("http") }?.let { urls.add(it) }
+                  // downloadAddr is the copy WITH the TikTok watermark: only used when nothing else exists
+                  val wm = v.optString("downloadAddr").takeIf { it.startsWith("http") }
                   v.optString("playAddr").takeIf { it.startsWith("http") }?.let { urls.add(it) }
                   if (urls.isEmpty()) other.sortedByDescending { it.first }.forEach { urls.add(it.second) }
                   // newer TikTok pages keep the links in other places: take every video link inside the video data
                   if (urls.isEmpty()) urls.addAll(videoUrls(v, setOf("cover", "originCover", "dynamicCover", "shareCover", "subtitleInfos", "claInfo")))
+                  if (urls.isEmpty() && wm != null) urls.add(wm)
                   val all = urls.distinct().take(6)
                   val cover = v.optString("cover").ifEmpty { v.optString("originCover") }
                   // the app later measures every candidate and downloads the biggest file (highest quality)
@@ -2445,9 +2453,28 @@ jobs:
                   if (o == null) return null
                   val thumb = best(o.optJSONObject("image_versions2")?.optJSONArray("candidates")) ?: ""
                   val vids = cands(o.optJSONArray("video_versions"))
+                  val dash = dashPair(o.optString("video_dash_manifest"))
+                  if (dash != null) return Media(dash.first, true, thumb, audio = dash.second, ua = UA, label = "dash")
                   return if (vids.isNotEmpty()) Media(vids[0], true, thumb, alts = vids.drop(1))
                   else if (thumb.isNotEmpty()) Media(thumb, false, thumb)
                   else null
+              }
+
+              // DASH list (picture and sound in separate files): best picture + best sound
+              private fun dashPair(xml: String): Pair<String, String>? {
+                  if (xml.isEmpty() || !xml.contains("<Representation")) return null
+                  var bv = ""; var bvBw = -1L; var ba = ""; var baBw = -1L
+                  for (m in Regex("<Representation([^>]*)>(.*?)</Representation>", RegexOption.DOT_MATCHES_ALL).findAll(xml)) {
+                      val at = m.groupValues[1]
+                      val url = Regex("<BaseURL>(.*?)</BaseURL>", RegexOption.DOT_MATCHES_ALL).find(m.groupValues[2])?.groupValues?.get(1)
+                          ?.replace("&amp;", "&")?.trim() ?: continue
+                      val bw = Regex("bandwidth=\"(\\d+)\"").find(at)?.groupValues?.get(1)?.toLongOrNull() ?: 0L
+                      val mime = Regex("mimeType=\"([^\"]+)\"").find(at)?.groupValues?.get(1)
+                          ?: Regex("mimeType=\"([^\"]+)\"").find(xml.substring(0, m.range.first).substringAfterLast("<AdaptationSet"))?.groupValues?.get(1) ?: ""
+                      if (mime.startsWith("audio")) { if (bw > baBw) { baBw = bw; ba = url } }
+                      else if (mime.startsWith("video")) { if (bw > bvBw) { bvBw = bw; bv = url } }
+                  }
+                  return if (bv.isNotEmpty() && ba.isNotEmpty()) Pair(bv, ba) else null
               }
 
               // all video links of a post, biggest picture first (entries without a picture size are usually audio only)
@@ -2498,13 +2525,14 @@ jobs:
                   Thread {
                       val good = ArrayList<Media>()
                       for (m in found) {
-                          if (!m.video) { good.add(m); continue }
+                          if (!m.video || m.label == "dash") { good.add(m); continue }
                           var pick: String? = null
                           for (u in (listOf(m.url) + m.alts).distinct()) {
                               val k = try { sniff(u, m.ref) } catch (e: Exception) { "other" }
                               if (k != "audio") { pick = u; break }
                           }
                           if (pick != null) good.add(Media(pick, true, m.thumb, m.ref, live = m.live, still = m.still))
+                          else if (m.thumb.isNotEmpty()) good.add(Media(m.thumb, false, m.thumb, m.ref))
                       }
                       runOnUiThread {
                           if (my == gen) {
@@ -3178,7 +3206,19 @@ jobs:
                   finishItem(item)
               }
 
+              private class PhotoInstead : IOException("photo with music")
+
               private fun save(m: Media, n: Int) {
+                  try {
+                      save0(m, n)
+                  } catch (e: PhotoInstead) {
+                      // a photo post with music: the post has no real video, so keep its photo
+                      save0(Media(m.thumb, false, m.thumb, m.ref), n)
+                      warn = "That post is a photo with music, so the photo was saved."
+                  }
+              }
+
+              private fun save0(m: Media, n: Int) {
                   if (m.hls) { saveHls(m, n); return }
                   if (m.audio.isNotEmpty()) { saveMux(m, n); return }
                   if (m.gua.isNotEmpty() && !m.hls) { saveWeb(m, n); return }
@@ -3206,7 +3246,10 @@ jobs:
                                       if (r < 0) break
                                       n += r
                                   }
-                                  if (m.video && kindOf(head, n) == "audio") throw IOException("This file is audio only, not a video")
+                                  if (m.video && kindOf(head, n) == "audio") {
+                                      if (m.thumb.isNotEmpty() && m.thumb != m.url) throw PhotoInstead()
+                                      throw IOException("This file is audio only, not a video")
+                                  }
                                   if (m.gua.isNotEmpty() && !isVideo(head, n)) throw IOException("The site sent a web page instead of the video")
                                   o.write(head, 0, n)
                                   var total = n.toLong()
