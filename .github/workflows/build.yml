@@ -52,8 +52,8 @@ jobs:
               applicationId 'com.pribadi.easydl'
               minSdk 29
               targetSdk 34
-              versionCode 22
-              versionName '5.8'
+              versionCode 24
+              versionName '6.0'
             }
             compileOptions {
               sourceCompatibility JavaVersion.VERSION_17
@@ -218,7 +218,8 @@ jobs:
               val itag: Int = 0,
               val aitag: Int = 0,
               val hls: Boolean = false,
-              val gua: String = ""
+              val gua: String = "",
+              val page: String = ""
           )
 
           class Fmt(val url: String, val h: Int, val mime: String, val codecs: String, val br: Long, val size: Long, val fps: Int, val itag: Int = 0, val lang: Int = 0)
@@ -533,7 +534,7 @@ jobs:
                       }
                   })
                   status = TextView(this).apply {
-                      text = "Easy Downloader 5.8\nCopy a video link from any website (Threads, X, TikTok, Facebook, Instagram, YouTube or others), then open this app. You can also paste it in the box above.\nSwipe left to see your downloaded files."
+                      text = "Easy Downloader 6.0\nCopy a video link from any website (Threads, X, TikTok, Facebook, Instagram, YouTube or others), then open this app. You can also paste it in the box above.\nSwipe left to see your downloaded files."
                       setPadding(0, dp(8), 0, dp(8))
                   }
                   list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -1601,6 +1602,17 @@ jobs:
                               }
                               return null
                           }
+                          if (plat == "th" || plat == "ig") {
+                              val u = request.url.toString()
+                              val l = u.lowercase()
+                              if (l.contains(".mp4") && (l.contains("cdninstagram") || l.contains("fbcdn"))) {
+                                  // the player asks for pieces (bytestart/byteend); without them the server sends the whole file
+                                  val full = u.replace(Regex("[&?](bytestart|byteend)=\\d+"), "").let { if (!it.contains("?") && it.contains("&")) it.replaceFirst("&", "?") else it }
+                                  synchronized(netVideos) {
+                                      if (netVideos.size < 30 && netVideos.none { it.substringBefore("?") == full.substringBefore("?") }) netVideos.add(full)
+                                  }
+                              }
+                          }
                           if (plat == "tt") {
                               val u = request.url.toString()
                               val l = u.lowercase()
@@ -1633,7 +1645,7 @@ jobs:
                           if (plat != "tt") view.evaluateJavascript(HOOK, null)
                       }
                   }
-                  if (plat == "tt") w.settings.mediaPlaybackRequiresUserGesture = false
+                  if (plat == "tt" || plat == "th" || plat == "ig") w.settings.mediaPlaybackRequiresUserGesture = false
                   if (big) {
                       webBox.addView(w, FrameLayout.LayoutParams(-1, -1))
                       webBox.addView(playerBox, FrameLayout.LayoutParams(-1, -1))
@@ -1940,6 +1952,7 @@ jobs:
                   val docs = synchronized(captured) { ArrayList(captured) }
                   var found: List<Media> = emptyList()
                   if ((plat == "tt" || plat == "th") && url.contains("/@")) srcOf(url).let { setSrc(it.first, it.second) }
+                  if (plat == "th" || plat == "ig") w.evaluateJavascript("document.querySelectorAll('video').forEach(function(v){try{v.muted=true;v.play()}catch(e){}})", null)
                   when (plat) {
                       "tt" -> {
                           val id = Regex("/(?:video|photo)/(\\d+)").find(url)?.groupValues?.get(1) ?: ""
@@ -2040,7 +2053,7 @@ jobs:
                           if (m != null) {
                               Thread {
                                   val r = thEmbed(m.groupValues[1], m.groupValues[2])
-                                  runOnUiThread { if (my == gen && !pollStop && r.isNotEmpty()) show(r) }
+                                  runOnUiThread { if (my == gen && !pollStop && r.isNotEmpty()) { if (r.any { it.video }) vetThen(my, r) else show(r) } }
                               }.start()
                           }
                       }
@@ -2398,7 +2411,7 @@ jobs:
                       }
                   }
                   val urls = ArrayList<String>()
-                  h264.sortedByDescending { it.first }.forEach { urls.add(it.second) }
+                  (h264 + other).sortedByDescending { it.first }.forEach { urls.add(it.second) }
                   // downloadAddr is the copy WITH the TikTok watermark: only used when nothing else exists
                   val wm = v.optString("downloadAddr").takeIf { it.startsWith("http") }
                   v.optString("playAddr").takeIf { it.startsWith("http") }?.let { urls.add(it) }
@@ -2406,10 +2419,10 @@ jobs:
                   // newer TikTok pages keep the links in other places: take every video link inside the video data
                   if (urls.isEmpty()) urls.addAll(videoUrls(v, setOf("cover", "originCover", "dynamicCover", "shareCover", "subtitleInfos", "claInfo")))
                   if (urls.isEmpty() && wm != null) urls.add(wm)
-                  val all = urls.distinct().take(6)
+                  val all = urls.distinct().take(10)
                   val cover = v.optString("cover").ifEmpty { v.optString("originCover") }
                   // the app later measures every candidate and downloads the biggest file (highest quality)
-                  if (all.isNotEmpty()) out.add(Media(all[0], true, cover, ref, alts = all.drop(1)))
+                  if (all.isNotEmpty()) out.add(Media(all[0], true, cover, ref, alts = all.drop(1), page = lastLink))
                   return out
               }
 
@@ -2518,21 +2531,87 @@ jobs:
               }
 
               // Threads / Instagram: make sure every "video" really is a video (not an audio file) before showing it
+              // what a video file really holds: picture track, sound track, total size (reads only the start of the file)
+              private class Trk(val url: String, val v: Boolean, val a: Boolean, val size: Long, val codec: String = "")
+
+              private fun tracksAt(u: String, ref: String): Trk {
+                  val c = open(u, ref)
+                  c.setRequestProperty("Range", "bytes=0-262143")
+                  try {
+                      if (c.responseCode >= 400) return Trk(u, false, false, -1L)
+                      val cr = c.getHeaderField("Content-Range")
+                      val size = if (cr != null && cr.contains("/")) (cr.substringAfter("/").trim().toLongOrNull() ?: -1L) else c.contentLengthLong
+                      val buf = ByteArrayOutputStream()
+                      c.inputStream.use { i ->
+                          val b = ByteArray(16384)
+                          var r = i.read(b)
+                          while (r >= 0 && buf.size() < 262144) { buf.write(b, 0, r); r = i.read(b) }
+                      }
+                      val h = buf.toByteArray()
+                      if (kindOf(h, minOf(16, h.size)) == "audio") return Trk(u, false, true, size)
+                      var v = false
+                      var a = false
+                      var k = 0
+                      while (k + 16 < h.size) {
+                          if (h[k] == 'h'.code.toByte() && h[k + 1] == 'd'.code.toByte() && h[k + 2] == 'l'.code.toByte() && h[k + 3] == 'r'.code.toByte()) {
+                              val t = String(h, k + 12, 4)
+                              if (t == "vide") v = true
+                              if (t == "soun") a = true
+                          }
+                          k++
+                      }
+                      if (!v && !a) v = true
+                      val txt = String(h, Charsets.ISO_8859_1)
+                      val codec = listOf("avc1", "avc3", "hvc1", "hev1", "vp09", "av01").firstOrNull { txt.contains(it) } ?: ""
+                      return Trk(u, v, a, size, codec)
+                  } finally {
+                      c.disconnect()
+                  }
+              }
+
+              // makes sure every "video" really has a picture, and adds the sound when it comes as a separate file
               private fun vetThen(my: Int, found: List<Media>) {
                   vetting = true
                   pollStop = true
                   say("Checking files…")
                   Thread {
                       val good = ArrayList<Media>()
+                      val single = found.count { it.video } == 1
+                      if (single && (plat == "th" || plat == "ig")) {
+                          // give the page player a moment to load its files
+                          var waited = 0
+                          while (waited < 5000 && synchronized(netVideos) { netVideos.size } < 2) { Thread.sleep(500); waited += 500 }
+                      }
+                      val net = if (single) synchronized(netVideos) { ArrayList(netVideos) } else ArrayList()
                       for (m in found) {
-                          if (!m.video || m.label == "dash") { good.add(m); continue }
-                          var pick: String? = null
-                          for (u in (listOf(m.url) + m.alts).distinct()) {
-                              val k = try { sniff(u, m.ref) } catch (e: Exception) { "other" }
-                              if (k != "audio") { pick = u; break }
+                          if (!m.video) { good.add(m); continue }
+                          if (plat == "tt") {
+                              var pick: String? = null
+                              for (u in (listOf(m.url) + m.alts).distinct()) {
+                                  val k = try { sniff(u, m.ref) } catch (e: Exception) { "other" }
+                                  if (k != "audio") { pick = u; break }
+                              }
+                              if (pick != null) good.add(Media(pick, true, m.thumb, m.ref, live = m.live, still = m.still))
+                              else if (m.thumb.isNotEmpty()) good.add(Media(m.thumb, false, m.thumb, m.ref))
+                              continue
                           }
-                          if (pick != null) good.add(Media(pick, true, m.thumb, m.ref, live = m.live, still = m.still))
-                          else if (m.thumb.isNotEmpty()) good.add(Media(m.thumb, false, m.thumb, m.ref))
+                          val all = (listOf(m.url) + m.alts + listOf(m.audio) + net).filter { it.startsWith("http") }.distinct().take(12)
+                          val tr = all.mapNotNull { u -> try { tracksAt(u, m.ref) } catch (e: Exception) { null } }
+                          val both = tr.filter { it.v && it.a }.maxByOrNull { it.size }
+                          // VP9 / AV1 pictures cannot be joined into an MP4 on most phones: use H.264 / H.265 ones
+                          val okc = setOf("", "avc1", "avc3", "hvc1", "hev1")
+                          val vOnly = tr.filter { it.v && !it.a && it.codec in okc }.maxByOrNull { it.size }
+                          val aOnly = tr.filter { !it.v && it.a }.maxByOrNull { it.size }
+                          when {
+                              both != null && (vOnly == null || aOnly == null || both.size >= vOnly.size) -> good.add(Media(both.url, true, m.thumb, m.ref))
+                              vOnly != null && aOnly != null -> good.add(Media(vOnly.url, true, m.thumb, m.ref, audio = aOnly.url, ua = UA, label = "dash",
+                                  alts = listOfNotNull(both?.url)))
+                              vOnly != null -> good.add(Media(vOnly.url, true, m.thumb, m.ref))
+                              m.thumb.isNotEmpty() -> {
+                                  good.add(Media(m.thumb, false, m.thumb, m.ref))
+                                  diag = "This post has only music, no video, so its photo is shown"
+                              }
+                          }
                       }
                       runOnUiThread {
                           if (my == gen) {
@@ -3211,10 +3290,19 @@ jobs:
               private fun save(m: Media, n: Int) {
                   try {
                       save0(m, n)
+                  } catch (e: Cancelled) {
+                      throw e
                   } catch (e: PhotoInstead) {
                       // a photo post with music: the post has no real video, so keep its photo
                       save0(Media(m.thumb, false, m.thumb, m.ref), n)
                       warn = "That post is a photo with music, so the photo was saved."
+                  } catch (e: Exception) {
+                      // joining picture and sound failed: save the ready-made file with sound instead
+                      if (m.label == "dash" && m.alts.isNotEmpty()) save0(Media(m.alts[0], true, m.thumb, m.ref), n)
+                      else if (m.label == "dash" && m.thumb.isNotEmpty()) {
+                          save0(Media(m.url, true, m.thumb, m.ref), n)
+                          warn = "The sound could not be joined, so the video was saved without sound."
+                      } else throw e
                   }
               }
 
@@ -3224,7 +3312,14 @@ jobs:
                   if (m.gua.isNotEmpty() && !m.hls) { saveWeb(m, n); return }
                   if (m.hls) { saveHls(m, n); return }
                   if (m.live) { saveLive(m, n); return }
-                  val url = pickBest(m)
+                  var mm = m
+                  if (m.page.isNotEmpty() && m.video) {
+                      // TikTok: the HD copy (1080p, H.265, no watermark) is often not in the web page data
+                      say("Looking for the HD version…")
+                      val hd = try { ttBackup(m.page).firstOrNull { it.video } } catch (e: Exception) { null }
+                      if (hd != null) mm = Media(m.url, true, m.thumb, m.ref, alts = m.alts + listOf(hd.url) + hd.alts)
+                  }
+                  val url = pickBest(mm)
                   val path = url.substringBefore("?").lowercase()
                   val ext = if (m.video) "mp4" else if (path.endsWith(".png")) "png" else if (path.endsWith(".webp")) "webp" else "jpg"
                   val mime = if (m.video) "video/mp4" else when (ext) {
