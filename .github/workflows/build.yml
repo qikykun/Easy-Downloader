@@ -52,8 +52,8 @@ jobs:
               applicationId 'com.pribadi.easydl'
               minSdk 29
               targetSdk 34
-              versionCode 26
-              versionName '6.2'
+              versionCode 27
+              versionName '6.3'
             }
             compileOptions {
               sourceCompatibility JavaVersion.VERSION_17
@@ -534,7 +534,7 @@ jobs:
                       }
                   })
                   status = TextView(this).apply {
-                      text = "Easy Downloader 6.2\nCopy a video link from any website (Threads, X, TikTok, Facebook, Instagram, YouTube or others), then open this app. You can also paste it in the box above.\nSwipe left to see your downloaded files."
+                      text = "Easy Downloader 6.3\nCopy a video link from any website (Threads, X, TikTok, Facebook, Instagram, YouTube or others), then open this app. You can also paste it in the box above.\nSwipe left to see your downloaded files."
                       setPadding(0, dp(8), 0, dp(8))
                   }
                   list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -1651,7 +1651,8 @@ jobs:
                       webBox.addView(playerBox, FrameLayout.LayoutParams(-1, -1))
                       webHost.visibility = View.VISIBLE
                       busy(false)
-                  } else host.addView(w, FrameLayout.LayoutParams(1, 1))
+                  } else if (plat == "th" || plat == "ig" || plat == "tt") host.addView(w, FrameLayout.LayoutParams(dp(360), dp(640)))
+                  else host.addView(w, FrameLayout.LayoutParams(1, 1))
                   web = w
                   return w
               }
@@ -1966,8 +1967,11 @@ jobs:
                               ttFallback(my, url)
                               return
                           }
-                          if (found.size == 1 && found[0].video && !found[0].live && ttOpts.isNotEmpty()) {
-                              ttQuality(my, ArrayList(ttOpts), found[0])
+                          if (found.size == 1 && found[0].video && !found[0].live) {
+                              val web0 = ArrayList(ttOpts)
+                              if (web0.isEmpty()) web0.add(Media(found[0].url, true, found[0].thumb, found[0].ref, alts = found[0].alts, itag = 2,
+                                  label = "Standard · no watermark"))
+                              ttQuality(my, web0, found[0])
                               return
                           }
                           if (found.isNotEmpty() && found.none { it.video }) {
@@ -2278,6 +2282,7 @@ jobs:
                   Thread {
                       val opts = ArrayList<Media>()
                       try {
+                          Thread.sleep(1100)
                           val d = ttData(page)
                           if (d != null) {
                               val abs = { u: String -> if (u.startsWith("/")) "https://www.tikwm.com$u" else u }
@@ -2306,6 +2311,28 @@ jobs:
               }
 
               private fun d0(l: List<Media>) = l.none { it.itag >= 100000 }
+
+              private fun finalUrl(u0: String): String {
+                  var u = u0
+                  for (k in 0 until 6) {
+                      val c = URL(u).openConnection() as HttpURLConnection
+                      c.instanceFollowRedirects = false
+                      c.setRequestProperty("User-Agent", UAD)
+                      c.setRequestProperty("Range", "bytes=0-0")
+                      c.connectTimeout = 20000
+                      c.readTimeout = 30000
+                      try {
+                          val code = c.responseCode
+                          if (code in 300..399) {
+                              val loc = c.getHeaderField("Location") ?: return u
+                              u = URL(URL(u), loc).toString()
+                          } else return u
+                      } finally {
+                          c.disconnect()
+                      }
+                  }
+                  return u
+              }
 
               private fun ttData(page: String): JSONObject? {
                   for (t in 0..2) {
@@ -2615,7 +2642,7 @@ jobs:
 
               // Threads / Instagram: make sure every "video" really is a video (not an audio file) before showing it
               // what a video file really holds: picture track, sound track, total size (reads only the start of the file)
-              private class Trk(val url: String, val v: Boolean, val a: Boolean, val size: Long, val codec: String = "")
+              private class Trk(val url: String, val v: Boolean, val a: Boolean, val size: Long, val codec: String = "", val known: Boolean = true)
 
               private fun tracksAt(u: String, ref: String): Trk {
                   val c = open(u, ref)
@@ -2643,10 +2670,11 @@ jobs:
                           }
                           k++
                       }
+                      val known = v || a
                       if (!v && !a) v = true
                       val txt = String(h, Charsets.ISO_8859_1)
                       val codec = listOf("avc1", "avc3", "hvc1", "hev1", "vp09", "av01").firstOrNull { txt.contains(it) } ?: ""
-                      return Trk(u, v, a, size, codec)
+                      return Trk(u, v, a, size, codec, known)
                   } finally {
                       c.disconnect()
                   }
@@ -2679,7 +2707,7 @@ jobs:
                               continue
                           }
                           val t0 = try { tracksAt(m.url, m.ref) } catch (e: Exception) { null }
-                          if (t0 == null || (t0.v && t0.a) || (!t0.v && !t0.a)) {
+                          if (t0 == null || !t0.known || (t0.v && t0.a)) {
                               // normal case (or the check could not read it): the post's own video file, like before
                               good.add(Media(m.url, true, m.thumb, m.ref, alts = m.alts))
                               continue
@@ -2689,14 +2717,14 @@ jobs:
                           val both = tr.filter { it.v && it.a }.maxByOrNull { it.size }
                           // VP9 / AV1 pictures cannot be joined into an MP4 on most phones: use H.264 / H.265 ones
                           val okc = setOf("", "avc1", "avc3", "hvc1", "hev1")
-                          val vOnly = tr.filter { it.v && !it.a && it.codec in okc }.maxByOrNull { it.size }
+                          val vOnly = tr.filter { it.v && !it.a && it.known && it.codec in okc }.maxByOrNull { it.size }
                           val aOnly = tr.filter { !it.v && it.a }.maxByOrNull { it.size }
                           when {
                               both != null && (vOnly == null || aOnly == null || both.size >= vOnly.size) -> good.add(Media(both.url, true, m.thumb, m.ref))
                               vOnly != null && aOnly != null -> good.add(Media(vOnly.url, true, m.thumb, m.ref, audio = aOnly.url, ua = UA, label = "dash",
                                   alts = listOfNotNull(both?.url)))
-                              vOnly != null -> good.add(Media(vOnly.url, true, m.thumb, m.ref))
-                              t0.v -> good.add(Media(m.url, true, m.thumb, m.ref))
+                              vOnly != null -> good.add(Media(vOnly.url, true, m.thumb, m.ref, label = "nosound"))
+                              t0.v -> good.add(Media(m.url, true, m.thumb, m.ref, label = "nosound"))
                               m.thumb.isNotEmpty() -> {
                                   good.add(Media(m.thumb, false, m.thumb, m.ref))
                                   diag = "This post has only music, no video, so its photo is shown"
@@ -3402,6 +3430,7 @@ jobs:
                   if (m.gua.isNotEmpty() && !m.hls) { saveWeb(m, n); return }
                   if (m.hls) { saveHls(m, n); return }
                   if (m.live) { saveLive(m, n); return }
+                  if (m.label == "nosound") warn = "The site gave this video without sound, and no separate sound file was found."
                   var mm = m
                   if (m.page.isNotEmpty() && m.video) {
                       // TikTok: the HD copy (1080p, H.265, no watermark) is often not in the web page data
@@ -3410,7 +3439,7 @@ jobs:
                       if (hd != null) mm = Media(m.url, true, m.thumb, m.ref, alts = m.alts + listOf(hd.url) + hd.alts)
                       warn = if (hd == null) "HD version not available (${ttNote.ifEmpty { "no answer" }})." else ""
                   }
-                  val url = pickBest(mm)
+                  val url = pickBest(mm).let { if (it.contains("tikwm.com")) finalUrl(it) else it }
                   if (m.page.isNotEmpty() && m.video) {
                       val mbs = try { sizeOf(url, m.ref) } catch (e: Exception) { -1L }
                       if (mbs > 0) warn = (if (url.contains("tikwm")) "HD version · " else "") + "${mbs / 1048576} MB. " + warn
