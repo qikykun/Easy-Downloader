@@ -52,8 +52,8 @@ jobs:
               applicationId 'com.pribadi.easydl'
               minSdk 29
               targetSdk 34
-              versionCode 25
-              versionName '6.1'
+              versionCode 26
+              versionName '6.2'
             }
             compileOptions {
               sourceCompatibility JavaVersion.VERSION_17
@@ -534,7 +534,7 @@ jobs:
                       }
                   })
                   status = TextView(this).apply {
-                      text = "Easy Downloader 6.1\nCopy a video link from any website (Threads, X, TikTok, Facebook, Instagram, YouTube or others), then open this app. You can also paste it in the box above.\nSwipe left to see your downloaded files."
+                      text = "Easy Downloader 6.2\nCopy a video link from any website (Threads, X, TikTok, Facebook, Instagram, YouTube or others), then open this app. You can also paste it in the box above.\nSwipe left to see your downloaded files."
                       setPadding(0, dp(8), 0, dp(8))
                   }
                   list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -1750,6 +1750,7 @@ jobs:
                   fbStall = 0
                   vetting = false
                   synchronized(netVideos) { netVideos.clear() }
+                  ttOpts.clear()
                   synchronized(genUrls) { genUrls.clear(); genRef.clear() }
                   genBase = ""
                   genSeen = -1
@@ -1963,6 +1964,10 @@ jobs:
                               val net = synchronized(netVideos) { ArrayList(netVideos) }
                               if (net.isNotEmpty()) { show(listOf(Media(net[0], true, "", "https://www.tiktok.com/", alts = net.drop(1).take(5)))); return }
                               ttFallback(my, url)
+                              return
+                          }
+                          if (found.size == 1 && found[0].video && !found[0].live && ttOpts.isNotEmpty()) {
+                              ttQuality(my, ArrayList(ttOpts), found[0])
                               return
                           }
                           if (found.isNotEmpty() && found.none { it.video }) {
@@ -2265,8 +2270,61 @@ jobs:
                   }.start()
               }
 
+              // shows every TikTok quality (also the HD copy from the helper service) so you can pick one
+              private fun ttQuality(my: Int, web0: List<Media>, first: Media) {
+                  pollStop = true
+                  say("Getting the qualities…")
+                  val page = lastLink
+                  Thread {
+                      val opts = ArrayList<Media>()
+                      try {
+                          val d = ttData(page)
+                          if (d != null) {
+                              val abs = { u: String -> if (u.startsWith("/")) "https://www.tikwm.com$u" else u }
+                              val hd = d.optString("hdplay")
+                              if (hd.isNotEmpty()) opts.add(Media(abs(hd), true, first.thumb, "", size = d.optLong("hd_size"), itag = 100000,
+                                  label = "HD (best)" + mb(d.optLong("hd_size")) + " · no watermark"))
+                              val pl = d.optString("play")
+                              if (pl.isNotEmpty() && pl != hd) opts.add(Media(abs(pl), true, first.thumb, "", size = d.optLong("size"), itag = 1,
+                                  label = "Normal" + mb(d.optLong("size")) + " · no watermark"))
+                          }
+                      } catch (e: Exception) {
+                      }
+                      // same picture size and format listed once (keep the bigger one)
+                      val seen = HashSet<String>()
+                      for (m in web0.sortedWith(compareByDescending<Media> { it.itag }.thenByDescending { it.size })) {
+                          if (seen.add(m.label.substringBefore(" · ", m.label) + m.label.contains("H.265"))) opts.add(m)
+                      }
+                      val sorted = opts.sortedWith(compareByDescending<Media> { it.itag >= 100000 }.thenByDescending { it.size })
+                      runOnUiThread {
+                          if (my == gen) {
+                              if (sorted.isEmpty()) show(listOf(first))
+                              else showYt(sorted, accText(parseSrc(srcName + "_000000000000")) + (if (ttNote.isNotEmpty() && d0(sorted)) "\n(HD copy not available: $ttNote)" else ""))
+                          }
+                      }
+                  }.start()
+              }
+
+              private fun d0(l: List<Media>) = l.none { it.itag >= 100000 }
+
+              private fun ttData(page: String): JSONObject? {
+                  for (t in 0..2) {
+                      // the free service allows about 1 request per second
+                      if (t > 0) Thread.sleep(1500)
+                      try {
+                          val r = ttCall(page)
+                          if (r.optInt("code", -1) == 0 && r.optJSONObject("data") != null) { ttNote = ""; return r.optJSONObject("data") }
+                          ttNote = r.optString("msg").ifEmpty { "no data" }
+                      } catch (e: Exception) {
+                          ttNote = e.message ?: "network error"
+                      }
+                  }
+                  return null
+              }
+
               // public TikTok helper service (the same kind other downloader apps use)
               @Volatile private var ttNote = ""
+              private val ttOpts = ArrayList<Media>()
 
               private fun ttCall(page: String): JSONObject {
                   val c = URL("https://www.tikwm.com/api/").openConnection() as HttpURLConnection
@@ -2283,20 +2341,7 @@ jobs:
               }
 
               private fun ttBackup(page: String): List<Media> {
-                  var j: JSONObject? = null
-                  for (t in 0..2) {
-                      // the free service allows about 1 request per second
-                      if (t > 0) Thread.sleep(1500)
-                      try {
-                          val r = ttCall(page)
-                          if (r.optInt("code", -1) == 0 && r.optJSONObject("data") != null) { j = r; break }
-                          ttNote = r.optString("msg").ifEmpty { "no data" }
-                      } catch (e: Exception) {
-                          ttNote = e.message ?: "network error"
-                      }
-                  }
-                  val d = j?.optJSONObject("data") ?: return emptyList()
-                  ttNote = ""
+                  val d = ttData(page) ?: return emptyList()
                   val abs = { u: String -> if (u.startsWith("/")) "https://www.tikwm.com$u" else u }
                   d.optJSONObject("author")?.optString("unique_id")?.takeIf { it.isNotEmpty() }?.let { setSrc(it, "tiktok") }
                   val imgs = d.optJSONArray("images")
@@ -2431,11 +2476,19 @@ jobs:
                   val h264 = ArrayList<Pair<Long, String>>()
                   val other = ArrayList<Pair<Long, String>>()
                   val rates = v.optJSONArray("bitrateInfo")
+                  ttOpts.clear()
+                  val cov0 = v.optString("cover").ifEmpty { v.optString("originCover") }
                   if (rates != null) {
                       for (i in 0 until rates.length()) {
                           val r = rates.optJSONObject(i) ?: continue
-                          val u = r.optJSONObject("PlayAddr")?.optJSONArray("UrlList")?.optString(0) ?: ""
+                          val pa = r.optJSONObject("PlayAddr")
+                          val u = pa?.optJSONArray("UrlList")?.optString(0) ?: ""
                           if (u.isEmpty()) continue
+                          val hgt = minOf(pa!!.optInt("Width"), pa.optInt("Height")).let { if (it <= 0) maxOf(pa.optInt("Width"), pa.optInt("Height")) else it }
+                          val sz = pa.optLong("DataSize")
+                          val cdc = if (r.optString("CodecType").contains("264")) "H.264" else "H.265"
+                          ttOpts.add(Media(u, true, cov0, ref, size = maxOf(sz, 0L), itag = hgt,
+                              label = (if (hgt > 0) "${hgt}p · " else "") + cdc + mb(sz) + " · no watermark"))
                           val e = Pair(r.optLong("Bitrate"), u)
                           if (r.optString("CodecType").contains("264")) h264.add(e) else other.add(e)
                       }
@@ -2497,8 +2550,8 @@ jobs:
                   val thumb = best(o.optJSONObject("image_versions2")?.optJSONArray("candidates")) ?: ""
                   val vids = cands(o.optJSONArray("video_versions"))
                   val dash = dashPair(o.optString("video_dash_manifest"))
-                  if (dash != null) return Media(dash.first, true, thumb, audio = dash.second, ua = UA, label = "dash")
-                  return if (vids.isNotEmpty()) Media(vids[0], true, thumb, alts = vids.drop(1))
+                  if (vids.isEmpty() && dash != null) return Media(dash.first, true, thumb, audio = dash.second, ua = UA, label = "dash")
+                  return if (vids.isNotEmpty()) Media(vids[0], true, thumb, alts = vids.drop(1) + (if (dash != null) listOf(dash.first, dash.second) else emptyList()))
                   else if (thumb.isNotEmpty()) Media(thumb, false, thumb)
                   else null
               }
