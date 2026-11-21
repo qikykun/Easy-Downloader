@@ -52,8 +52,8 @@ jobs:
               applicationId 'com.pribadi.easydl'
               minSdk 29
               targetSdk 34
-              versionCode 29
-              versionName '6.5'
+              versionCode 30
+              versionName '6.6'
             }
             compileOptions {
               sourceCompatibility JavaVersion.VERSION_17
@@ -534,7 +534,7 @@ jobs:
                       }
                   })
                   status = TextView(this).apply {
-                      text = "Easy Downloader 6.5\nCopy a video link from any website (Threads, X, TikTok, Facebook, Instagram, YouTube or others), then open this app. You can also paste it in the box above.\nSwipe left to see your downloaded files."
+                      text = "Easy Downloader 6.6\nCopy a video link from any website (Threads, X, TikTok, Facebook, Instagram, YouTube or others), then open this app. You can also paste it in the box above.\nSwipe left to see your downloaded files."
                       setPadding(0, dp(8), 0, dp(8))
                   }
                   list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -2611,16 +2611,14 @@ jobs:
                   val thumb = best(o.optJSONObject("image_versions2")?.optJSONArray("candidates")) ?: ""
                   val vids = cands(o.optJSONArray("video_versions"))
                   val dash = dashPair(o.optString("video_dash_manifest"))
-                  if (vids.isEmpty() && dash != null) return Media(dash.first, true, thumb, audio = dash.second, ua = UA, label = "dash")
-                  val reps = dashReps(o.optString("video_dash_manifest"))
-                  val extra = reps.sortedWith(compareBy<Rep> { it.audio }.thenByDescending { it.bw }).map { it.url }
-                  return if (vids.isNotEmpty()) Media(vids[0], true, thumb, alts = vids.drop(1) + extra)
+                  if (dash != null) return Media(dash.first, true, thumb, audio = dash.second, ua = UA, label = "dash", alts = vids)
+                  return if (vids.isNotEmpty()) Media(vids[0], true, thumb, alts = vids.drop(1))
                   else if (thumb.isNotEmpty()) Media(thumb, false, thumb)
                   else null
               }
 
               // DASH list (picture and sound in separate files): best picture + best sound
-              private class Rep(val url: String, val audio: Boolean, val codec: String, val bw: Long)
+              private class Rep(val url: String, val audio: Boolean, val codec: String, val bw: Long, val h: Int = 0)
 
               private fun dashReps(xml: String): List<Rep> {
                   val out = ArrayList<Rep>()
@@ -2635,7 +2633,8 @@ jobs:
                           ?: Regex("mimeType=\"([^\"]+)\"").find(set)?.groupValues?.get(1)
                           ?: Regex("contentType=\"([^\"]+)\"").find(set)?.groupValues?.get(1) ?: ""
                       val codec = Regex("codecs=\"([^\"]+)\"").find(at)?.groupValues?.get(1) ?: Regex("codecs=\"([^\"]+)\"").find(set)?.groupValues?.get(1) ?: ""
-                      if (mime.startsWith("audio") || mime.startsWith("video")) out.add(Rep(url, mime.startsWith("audio"), codec, bw))
+                      val hh = Regex("\\bheight=\"(\\d+)\"").find(at)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+                      if (mime.startsWith("audio") || mime.startsWith("video")) out.add(Rep(url, mime.startsWith("audio"), codec, bw, hh))
                   }
                   return out
               }
@@ -2645,8 +2644,9 @@ jobs:
                   val r = dashReps(xml)
                   val a = r.filter { it.audio }.maxByOrNull { it.bw } ?: return null
                   val vs = r.filter { !it.audio }
-                  val v = vs.filter { it.codec.startsWith("avc") || it.codec.startsWith("hvc") || it.codec.startsWith("hev") }.maxByOrNull { it.bw }
-                      ?: vs.maxByOrNull { it.bw } ?: return null
+                  val top = vs.maxOfOrNull { it.h } ?: return null
+                  val v = vs.filter { (it.codec.startsWith("avc") || it.codec.startsWith("hvc") || it.codec.startsWith("hev")) && it.h * 10 >= top * 9 }.maxByOrNull { it.bw }
+                      ?: vs.filter { it.h == top }.maxByOrNull { it.bw } ?: return null
                   return Pair(v.url, a.url)
               }
 
@@ -2745,7 +2745,7 @@ jobs:
                       }
                       val net = if (single) synchronized(netVideos) { ArrayList(netVideos) } else ArrayList()
                       for (m in found) {
-                          if (!m.video) { good.add(m); continue }
+                          if (!m.video || m.label == "dash") { good.add(m); continue }
                           if (plat == "tt") {
                               var pick: String? = null
                               for (u in (listOf(m.url) + m.alts).distinct()) {
@@ -2777,7 +2777,7 @@ jobs:
                               vOnly != null && aOnly != null -> good.add(Media(vOnly.url, true, m.thumb, m.ref, audio = aOnly.url, ua = UA, label = "dash",
                                   alts = listOfNotNull(both?.url)))
                               // only VP9 pictures: join them with the sound into a WebM video (the sound is converted to Opus)
-                              vAny != null && aOnly != null -> good.add(Media(vAny.url, true, m.thumb, m.ref, audio = aOnly.url, ua = UA, label = "dash", webm = true))
+                              vAny != null && aOnly != null -> good.add(Media(vAny.url, true, m.thumb, m.ref, audio = aOnly.url, ua = UA, label = "dash"))
                               vOnly != null -> good.add(Media(vOnly.url, true, m.thumb, m.ref, label = "nosound"))
                               t0.v -> good.add(Media(m.url, true, m.thumb, m.ref, label = "nosound"))
                               m.thumb.isNotEmpty() -> {
@@ -4084,6 +4084,27 @@ jobs:
               }
 
               private fun mux(vp: String, ap: String, fd: FileDescriptor, webm: Boolean) {
+                  if (!webm) {
+                      val vm = try {
+                          val e = MediaExtractor(); e.setDataSource(vp)
+                          val r = e.getTrackFormat(trackOf(e, "video/")).getString(MediaFormat.KEY_MIME) ?: ""
+                          e.release(); r
+                      } catch (e: Exception) { "" }
+                      val copyJoin = {
+                          val fo = java.io.FileOutputStream(fd)
+                          fo.channel.truncate(0L); fo.channel.position(0L)
+                          FragJoin.join(vp, ap, java.io.BufferedOutputStream(fo, 1 shl 16))
+                      }
+                      if (!(vm == "video/avc" || vm == "video/hevc")) {
+                          try { copyJoin(); return } catch (e: Exception) { if (vm.isNotEmpty() && vm != "video/avc" && vm != "video/hevc") throw e }
+                      }
+                      try { mux1(vp, ap, fd, false) } catch (e: Exception) { copyJoin() }
+                      return
+                  }
+                  mux1(vp, ap, fd, true)
+              }
+
+              private fun mux1(vp: String, ap: String, fd: FileDescriptor, webm: Boolean) {
                   if (webm) {
                       val aex0 = MediaExtractor()
                       aex0.setDataSource(ap)
@@ -4121,6 +4142,218 @@ jobs:
                   mx.release()
                   vex.release()
                   aex.release()
+              }
+          }
+
+          // joins a picture-only fragmented MP4 (any codec, e.g. VP9) and a sound-only fragmented MP4 (e.g. AAC)
+          // into one MP4 by copying the boxes as they are (no re-encoding), like Instagram's own player does
+          object FragJoin {
+              private class Box(val type: String, val off: Long, val size: Long)
+              private class Frag(val moofOff: Long, val moofSize: Long, val mdatOff: Long, val mdatSize: Long, val v: Boolean, val start: Double)
+              private class Src(val raf: java.io.RandomAccessFile, val trak: ByteArray, val trex: ByteArray?, val mvhd: ByteArray,
+                                val scale: Long, val dur: Long, val frags: List<Frag>)
+
+              private fun u32(b: ByteArray, o: Int): Long =
+                  ((b[o].toLong() and 0xFF) shl 24) or ((b[o + 1].toLong() and 0xFF) shl 16) or ((b[o + 2].toLong() and 0xFF) shl 8) or (b[o + 3].toLong() and 0xFF)
+              private fun u64(b: ByteArray, o: Int): Long = (u32(b, o) shl 32) or u32(b, o + 4)
+              private fun p32(b: ByteArray, o: Int, v: Long) { for (i in 0..3) b[o + i] = (v shr (24 - 8 * i)).toByte() }
+              private fun p64(b: ByteArray, o: Int, v: Long) { p32(b, o, v ushr 32); p32(b, o + 4, v and 0xFFFFFFFFL) }
+              private fun typ(b: ByteArray, o: Int) = String(b, o, 4, Charsets.ISO_8859_1)
+
+              private fun top(raf: java.io.RandomAccessFile): List<Box> {
+                  val out = ArrayList<Box>()
+                  val len = raf.length()
+                  var p = 0L
+                  val h = ByteArray(16)
+                  while (p + 8 <= len) {
+                      raf.seek(p); raf.readFully(h, 0, 8)
+                      var s = u32(h, 0)
+                      val t = typ(h, 4)
+                      if (s == 1L) { raf.readFully(h, 8, 8); s = u64(h, 8) }
+                      if (s == 0L) s = len - p
+                      if (s < 8) break
+                      out.add(Box(t, p, s))
+                      p += s
+                  }
+                  return out
+              }
+
+              // children of a box held in memory: (type, start, size)
+              private fun kids(b: ByteArray, s: Int, e: Int): List<Triple<String, Int, Int>> {
+                  val out = ArrayList<Triple<String, Int, Int>>()
+                  var p = s
+                  while (p + 8 <= e) {
+                      var sz = u32(b, p).toInt()
+                      if (sz == 0) sz = e - p
+                      if (sz < 8 || p + sz > e) break
+                      out.add(Triple(typ(b, p + 4), p, sz))
+                      p += sz
+                  }
+                  return out
+              }
+              private fun kid(b: ByteArray, s: Int, e: Int, t: String) = kids(b, s, e).firstOrNull { it.first == t }
+
+              private fun read(raf: java.io.RandomAccessFile, off: Long, size: Long): ByteArray {
+                  val b = ByteArray(size.toInt()); raf.seek(off); raf.readFully(b); return b
+              }
+
+              private fun load(path: String, wantVideo: Boolean): Src {
+                  val raf = java.io.RandomAccessFile(path, "r")
+                  val bs = top(raf)
+                  val mb = bs.firstOrNull { it.type == "moov" } ?: throw java.io.IOException("no moov")
+                  val moov = read(raf, mb.off, mb.size)
+                  val mvhdK = kid(moov, 8, moov.size, "mvhd") ?: throw java.io.IOException("no mvhd")
+                  val mvhd = moov.copyOfRange(mvhdK.second, mvhdK.second + mvhdK.third)
+                  var trak: ByteArray? = null
+                  var id = 0L
+                  var scale = 1L
+                  for (k in kids(moov, 8, moov.size).filter { it.first == "trak" }) {
+                      val t = moov.copyOfRange(k.second, k.second + k.third)
+                      val mdia = kid(t, 8, t.size, "mdia") ?: continue
+                      val hd = kid(t, mdia.second + 8, mdia.second + mdia.third, "hdlr") ?: continue
+                      val h = typ(t, hd.second + 16)
+                      if ((wantVideo && h == "vide") || (!wantVideo && h == "soun")) {
+                          val tk = kid(t, 8, t.size, "tkhd")!!
+                          id = u32(t, tk.second + if (t[tk.second + 8].toInt() == 1) 28 else 20)
+                          val md = kid(t, mdia.second + 8, mdia.second + mdia.third, "mdhd")!!
+                          scale = u32(t, md.second + if (t[md.second + 8].toInt() == 1) 28 else 20)
+                          trak = t
+                          break
+                      }
+                  }
+                  if (trak == null) throw java.io.IOException(if (wantVideo) "no picture track" else "no sound track")
+                  var trex: ByteArray? = null
+                  kid(moov, 8, moov.size, "mvex")?.let { mx ->
+                      for (k in kids(moov, mx.second + 8, mx.second + mx.third).filter { it.first == "trex" })
+                          if (u32(moov, k.second + 12) == id) trex = moov.copyOfRange(k.second, k.second + k.third)
+                  }
+                  val defDur = trex?.let { u32(it, 20) } ?: 0L
+                  val frags = ArrayList<Frag>()
+                  var t = 0L
+                  var total = 0L
+                  for (i in bs.indices) {
+                      if (bs[i].type != "moof") continue
+                      val md = bs.drop(i + 1).firstOrNull { it.type == "mdat" || it.type == "moof" } ?: continue
+                      if (md.type != "mdat") continue
+                      val moof = read(raf, bs[i].off, bs[i].size)
+                      var start = -1L
+                      var d = 0L
+                      for (tf in kids(moof, 8, moof.size).filter { it.first == "traf" }) {
+                          val e = tf.second + tf.third
+                          var dd = defDur
+                          kid(moof, tf.second + 8, e, "tfhd")?.let { th ->
+                              val fl = u32(moof, th.second + 8) and 0xFFFFFF
+                              var o = th.second + 16
+                              if (fl and 1L != 0L) o += 8
+                              if (fl and 2L != 0L) o += 4
+                              if (fl and 8L != 0L) dd = u32(moof, o)
+                          }
+                          kid(moof, tf.second + 8, e, "tfdt")?.let { td ->
+                              start = if (moof[td.second + 8].toInt() == 1) u64(moof, td.second + 12) else u32(moof, td.second + 12)
+                          }
+                          for (tr in kids(moof, tf.second + 8, e).filter { it.first == "trun" }) {
+                              val fl = u32(moof, tr.second + 8) and 0xFFFFFF
+                              val n = u32(moof, tr.second + 12)
+                              var o = tr.second + 16
+                              if (fl and 1L != 0L) o += 4
+                              if (fl and 4L != 0L) o += 4
+                              val per = (if (fl and 0x100L != 0L) 4 else 0) + (if (fl and 0x200L != 0L) 4 else 0) +
+                                  (if (fl and 0x400L != 0L) 4 else 0) + (if (fl and 0x800L != 0L) 4 else 0)
+                              if (fl and 0x100L != 0L) {
+                                  for (j in 0 until n.toInt()) { if (o + 4 > moof.size) break; d += u32(moof, o); o += per }
+                              } else d += n * dd
+                          }
+                      }
+                      if (start < 0) start = t
+                      t = start + d
+                      total = maxOf(total, t)
+                      frags.add(Frag(bs[i].off, bs[i].size, md.off, md.size, wantVideo, start.toDouble() / scale))
+                  }
+                  if (frags.isEmpty()) throw java.io.IOException("not a fragmented file")
+                  return Src(raf, trak!!, trex, mvhd, scale, total, frags)
+              }
+
+              private fun box(t: String, vararg parts: ByteArray): ByteArray {
+                  val n = 8 + parts.sumOf { it.size }
+                  val b = ByteArray(n)
+                  p32(b, 0, n.toLong())
+                  System.arraycopy(t.toByteArray(Charsets.ISO_8859_1), 0, b, 4, 4)
+                  var p = 8
+                  for (x in parts) { System.arraycopy(x, 0, b, p, x.size); p += x.size }
+                  return b
+              }
+
+              // new copy of a track with its own number and length
+              private fun fixTrak(t0: ByteArray, id: Long, durMovie: Long, durMedia: Long): ByteArray {
+                  val t = t0.copyOf()
+                  kid(t, 8, t.size, "tkhd")?.let { k ->
+                      if (t[k.second + 8].toInt() == 1) { p32(t, k.second + 28, id); p64(t, k.second + 36, durMovie) }
+                      else { p32(t, k.second + 20, id); p32(t, k.second + 28, minOf(durMovie, 0xFFFFFFFFL)) }
+                  }
+                  kid(t, 8, t.size, "mdia")?.let { m ->
+                      kid(t, m.second + 8, m.second + m.third, "mdhd")?.let { k ->
+                          if (t[k.second + 8].toInt() == 1) p64(t, k.second + 32, durMedia) else p32(t, k.second + 24, minOf(durMedia, 0xFFFFFFFFL))
+                      }
+                  }
+                  return t
+              }
+
+              private fun trex(src: ByteArray?, id: Long): ByteArray {
+                  val b = src?.copyOf() ?: ByteArray(32).also { p32(it, 0, 32); System.arraycopy("trex".toByteArray(), 0, it, 4, 4); p32(it, 16, 1) }
+                  p32(b, 12, id)
+                  return b
+              }
+
+              fun join(vp: String, ap: String, out: java.io.OutputStream) {
+                  val v = load(vp, true)
+                  val a = load(ap, false)
+                  try {
+                      val ms = u32(v.mvhd, if (v.mvhd[8].toInt() == 1) 28 else 20).coerceAtLeast(1L)
+                      val vMovie = v.dur * ms / v.scale
+                      val aMovie = a.dur * ms / a.scale
+                      val movie = maxOf(vMovie, aMovie)
+                      val mvhd = v.mvhd.copyOf()
+                      if (mvhd[8].toInt() == 1) p64(mvhd, 32, movie) else p32(mvhd, 24, minOf(movie, 0xFFFFFFFFL))
+                      p32(mvhd, mvhd.size - 4, 3)
+                      val mehd = ByteArray(20).also { p32(it, 0, 20); System.arraycopy("mehd".toByteArray(), 0, it, 4, 4); it[8] = 1; p64(it, 12, movie) }
+                      val moov = box("moov", mvhd, fixTrak(v.trak, 1, vMovie, v.dur), fixTrak(a.trak, 2, aMovie, a.dur),
+                          box("mvex", mehd, trex(v.trex, 1), trex(a.trex, 2)))
+                      val ftyp = box("ftyp", "isom".toByteArray(), byteArrayOf(0, 0, 2, 0), "isomiso6iso5mp41dash".toByteArray())
+                      out.write(ftyp)
+                      out.write(moov)
+                      var pos = (ftyp.size + moov.size).toLong()
+                      val all = (v.frags + a.frags).sortedWith(compareBy<Frag> { it.start }.thenBy { if (it.v) 0 else 1 })
+                      var seq = 1L
+                      val buf = ByteArray(1 shl 16)
+                      for (f in all) {
+                          val s = if (f.v) v else a
+                          val moof = read(s.raf, f.moofOff, f.moofSize)
+                          val shift = pos - f.moofOff
+                          kid(moof, 8, moof.size, "mfhd")?.let { p32(moof, it.second + 12, seq++) }
+                          for (tf in kids(moof, 8, moof.size).filter { it.first == "traf" }) {
+                              kid(moof, tf.second + 8, tf.second + tf.third, "tfhd")?.let { th ->
+                                  p32(moof, th.second + 12, if (f.v) 1 else 2)
+                                  val fl = u32(moof, th.second + 8) and 0xFFFFFF
+                                  if (fl and 1L != 0L) p64(moof, th.second + 16, u64(moof, th.second + 16) + shift)
+                              }
+                          }
+                          out.write(moof)
+                          pos += moof.size
+                          // keep anything that sat between the fragment header and its data, so offsets stay right
+                          var p = f.moofOff + f.moofSize
+                          val end = f.mdatOff + f.mdatSize
+                          s.raf.seek(p)
+                          while (p < end) {
+                              val r = s.raf.read(buf, 0, minOf(buf.size.toLong(), end - p).toInt())
+                              if (r < 0) break
+                              out.write(buf, 0, r)
+                              p += r; pos += r
+                          }
+                      }
+                      out.flush()
+                  } finally {
+                      v.raf.close(); a.raf.close()
+                  }
               }
           }
           EOF
