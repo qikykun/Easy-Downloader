@@ -52,8 +52,8 @@ jobs:
               applicationId 'com.pribadi.easydl'
               minSdk 29
               targetSdk 34
-              versionCode 34
-              versionName '7.0'
+              versionCode 35
+              versionName '7.1'
             }
             compileOptions {
               sourceCompatibility JavaVersion.VERSION_17
@@ -536,7 +536,7 @@ jobs:
                       }
                   })
                   status = TextView(this).apply {
-                      text = "Easy Downloader 7.0\nCopy a video link from any website (Threads, X, TikTok, Facebook, Instagram, YouTube or others), then open this app. You can also paste it in the box above.\nSwipe left to see your downloaded files."
+                      text = "Easy Downloader 7.1\nCopy a video link from any website (Threads, X, TikTok, Facebook, Instagram, YouTube or others), then open this app. You can also paste it in the box above.\nSwipe left to see your downloaded files."
                       setPadding(0, dp(8), 0, dp(8))
                   }
                   list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -4264,7 +4264,13 @@ jobs:
                       val copyJoin = {
                           val fo = java.io.FileOutputStream(fd)
                           fo.channel.truncate(0L); fo.channel.position(0L)
-                          FragJoin.join(vp, ap, java.io.BufferedOutputStream(fo, 1 shl 16))
+                          try {
+                              // plain MP4 with full tables first (plays to the end in every player)
+                              FragJoin.joinFlat(vp, ap, java.io.BufferedOutputStream(fo, 1 shl 16))
+                          } catch (e: Exception) {
+                              fo.channel.truncate(0L); fo.channel.position(0L)
+                              FragJoin.join(vp, ap, java.io.BufferedOutputStream(fo, 1 shl 16))
+                          }
                       }
                       if (!(vm == "video/avc" || vm == "video/hevc")) {
                           try { copyJoin(); return } catch (e: Exception) { if (vm.isNotEmpty() && vm != "video/avc" && vm != "video/hevc") throw e }
@@ -4519,6 +4525,172 @@ jobs:
                               if (r < 0) break
                               out.write(buf, 0, r)
                               p += r; pos += r
+                          }
+                      }
+                      out.flush()
+                  } finally {
+                      v.raf.close(); a.raf.close()
+                  }
+              }
+
+              // ---- one plain (not fragmented) MP4 with full sample tables: plays smoothly in every phone player ----
+              private class Smp(val off: Long, val size: Long, val dur: Long, val cto: Long, val sync: Boolean)
+              private class Chunk(val v: Boolean, val start: Double, val off: Long, val n: Int, val bytes: Long)
+
+              private fun samples(path: String, raf: java.io.RandomAccessFile, trex: ByteArray?, scale: Long, isV: Boolean,
+                                  out: ArrayList<Smp>, chunks: ArrayList<Chunk>) {
+                  val tDur = trex?.let { u32(it, 20) } ?: 0L
+                  val tSize = trex?.let { u32(it, 24) } ?: 0L
+                  val tFlags = trex?.let { u32(it, 28) } ?: 0L
+                  var time = 0L
+                  for (bx in top(raf)) {
+                      if (bx.type != "moof") continue
+                      val moof = read(raf, bx.off, bx.size)
+                      for (tf in kids(moof, 8, moof.size).filter { it.first == "traf" }) {
+                          val e = tf.second + tf.third
+                          var base = bx.off
+                          var dDur = tDur; var dSize = tSize; var dFlags = tFlags
+                          kid(moof, tf.second + 8, e, "tfhd")?.let { th ->
+                              val fl = u32(moof, th.second + 8) and 0xFFFFFF
+                              var o = th.second + 16
+                              if (fl and 1L != 0L) { base = u64(moof, o); o += 8 }
+                              if (fl and 2L != 0L) o += 4
+                              if (fl and 8L != 0L) { dDur = u32(moof, o); o += 4 }
+                              if (fl and 0x10L != 0L) { dSize = u32(moof, o); o += 4 }
+                              if (fl and 0x20L != 0L) { dFlags = u32(moof, o); o += 4 }
+                          }
+                          kid(moof, tf.second + 8, e, "tfdt")?.let { td ->
+                              time = if (moof[td.second + 8].toInt() == 1) u64(moof, td.second + 12) else u32(moof, td.second + 12)
+                          }
+                          var next = base
+                          for (tr in kids(moof, tf.second + 8, e).filter { it.first == "trun" }) {
+                              val ver = moof[tr.second + 8].toInt()
+                              val fl = u32(moof, tr.second + 8) and 0xFFFFFF
+                              val n = u32(moof, tr.second + 12).toInt()
+                              var o = tr.second + 16
+                              var pos = next
+                              if (fl and 1L != 0L) { pos = base + u32(moof, o).toInt().toLong(); o += 4 }
+                              var first: Long? = null
+                              if (fl and 4L != 0L) { first = u32(moof, o); o += 4 }
+                              val startPos = pos
+                              val chunkStart = time
+                              var cnt = 0
+                              for (j in 0 until n) {
+                                  var d = dDur; var sz = dSize; var f = if (j == 0 && first != null) first else dFlags; var c = 0L
+                                  if (fl and 0x100L != 0L) { d = u32(moof, o); o += 4 }
+                                  if (fl and 0x200L != 0L) { sz = u32(moof, o); o += 4 }
+                                  if (fl and 0x400L != 0L) { f = u32(moof, o); o += 4 }
+                                  if (fl and 0x800L != 0L) { c = if (ver == 1) u32(moof, o).toInt().toLong() else u32(moof, o); o += 4 }
+                                  out.add(Smp(pos, sz, d, c, !isV || (f and 0x10000L) == 0L))
+                                  pos += sz; time += d; cnt++
+                              }
+                              if (cnt > 0) chunks.add(Chunk(isV, chunkStart.toDouble() / scale, startPos, cnt, pos - startPos))
+                              next = pos
+                          }
+                      }
+                  }
+                  if (out.isEmpty()) throw java.io.IOException("no samples")
+              }
+
+              private fun full(t: String, ver: Int, body: ByteArray): ByteArray = box(t, byteArrayOf(ver.toByte(), 0, 0, 0), body)
+              private fun be32(vararg v: Long): ByteArray { val b = ByteArray(4 * v.size); v.forEachIndexed { i, x -> p32(b, 4 * i, x) }; return b }
+
+              private fun stbl(stsd: ByteArray, s: List<Smp>, ch: List<Chunk>, offs: LongArray, isV: Boolean): ByteArray {
+                  val stts = ArrayList<Long>()
+                  var i = 0
+                  while (i < s.size) { var j = i; while (j < s.size && s[j].dur == s[i].dur) j++; stts.add((j - i).toLong()); stts.add(s[i].dur); i = j }
+                  val parts = ArrayList<ByteArray>()
+                  parts.add(stsd)
+                  parts.add(full("stts", 0, be32(stts.size / 2L) + be32(*stts.toLongArray())))
+                  if (s.any { it.cto != 0L }) {
+                      val ct = ArrayList<Long>()
+                      i = 0
+                      while (i < s.size) { var j = i; while (j < s.size && s[j].cto == s[i].cto) j++; ct.add((j - i).toLong()); ct.add(s[i].cto and 0xFFFFFFFFL); i = j }
+                      parts.add(full("ctts", if (s.any { it.cto < 0 }) 1 else 0, be32(ct.size / 2L) + be32(*ct.toLongArray())))
+                  }
+                  if (isV && s.any { !it.sync }) {
+                      val ss = s.indices.filter { s[it].sync }.map { (it + 1).toLong() }
+                      parts.add(full("stss", 0, be32(ss.size.toLong()) + be32(*ss.toLongArray())))
+                  }
+                  val sc = ArrayList<Long>()
+                  var prev = -1
+                  ch.forEachIndexed { k, c -> if (c.n != prev) { sc.add(k + 1L); sc.add(c.n.toLong()); sc.add(1L); prev = c.n } }
+                  parts.add(full("stsc", 0, be32(sc.size / 3L) + be32(*sc.toLongArray())))
+                  parts.add(full("stsz", 0, be32(0L, s.size.toLong()) + be32(*s.map { it.size }.toLongArray())))
+                  val co = ByteArray(4 + 8 * offs.size)
+                  p32(co, 0, offs.size.toLong())
+                  offs.forEachIndexed { k, x -> p64(co, 4 + 8 * k, x) }
+                  parts.add(full("co64", 0, co))
+                  return box("stbl", *parts.toTypedArray())
+              }
+
+              // rebuilds trak > mdia > minf with a new stbl, sets track number and lengths
+              private fun flatTrak(t0: ByteArray, id: Long, durMovie: Long, durMedia: Long, newStbl: ByteArray): ByteArray {
+                  val t = fixTrak(t0, id, durMovie, durMedia)
+                  fun rebuild(b: ByteArray, s: Int, e: Int, type: String): ByteArray {
+                      val parts = kids(b, s, e).map { k ->
+                          when (k.first) {
+                              "mdia", "minf" -> rebuild(b, k.second + 8, k.second + k.third, k.first)
+                              "stbl" -> newStbl
+                              else -> b.copyOfRange(k.second, k.second + k.third)
+                          }
+                      }
+                      return box(type, *parts.toTypedArray())
+                  }
+                  return rebuild(t, 8, t.size, "trak")
+              }
+
+              private fun stsdOf(t: ByteArray): ByteArray {
+                  val md = kid(t, 8, t.size, "mdia")!!
+                  val mi = kid(t, md.second + 8, md.second + md.third, "minf")!!
+                  val sb = kid(t, mi.second + 8, mi.second + mi.third, "stbl")!!
+                  val sd = kid(t, sb.second + 8, sb.second + sb.third, "stsd")!!
+                  return t.copyOfRange(sd.second, sd.second + sd.third)
+              }
+
+              fun joinFlat(vp: String, ap: String, out: java.io.OutputStream) {
+                  val v = load(vp, true)
+                  val a = load(ap, false)
+                  try {
+                      val vs = ArrayList<Smp>(); val vc = ArrayList<Chunk>()
+                      val asm = ArrayList<Smp>(); val ac = ArrayList<Chunk>()
+                      samples(vp, v.raf, v.trex, v.scale, true, vs, vc)
+                      samples(ap, a.raf, a.trex, a.scale, false, asm, ac)
+                      val vDur = vs.sumOf { it.dur }; val aDur = asm.sumOf { it.dur }
+                      val ms = u32(v.mvhd, if (v.mvhd[8].toInt() == 1) 28 else 20).coerceAtLeast(1L)
+                      val vMovie = vDur * ms / v.scale; val aMovie = aDur * ms / a.scale
+                      val movie = maxOf(vMovie, aMovie)
+                      val mvhd = v.mvhd.copyOf()
+                      if (mvhd[8].toInt() == 1) p64(mvhd, 32, movie) else p32(mvhd, 24, minOf(movie, 0xFFFFFFFFL))
+                      p32(mvhd, mvhd.size - 4, 3)
+                      val all = (vc + ac).sortedWith(compareBy<Chunk> { it.start }.thenBy { if (it.v) 0 else 1 })
+                      val ftyp = box("ftyp", "isom".toByteArray(), byteArrayOf(0, 0, 2, 0), "isomiso2mp41".toByteArray())
+                      // sizes do not depend on the offsets, so build once with zeros to learn where the data starts
+                      fun moov(vo: LongArray, ao: LongArray) = box("moov", mvhd,
+                          flatTrak(v.trak, 1, vMovie, vDur, stbl(stsdOf(v.trak), vs, vc, vo, true)),
+                          flatTrak(a.trak, 2, aMovie, aDur, stbl(stsdOf(a.trak), asm, ac, ao, false)))
+                      val m0 = moov(LongArray(vc.size), LongArray(ac.size))
+                      val total = all.sumOf { it.bytes }
+                      val dataStart = ftyp.size + m0.size + 16L
+                      val vo = LongArray(vc.size); val ao = LongArray(ac.size)
+                      var p = dataStart
+                      for (c in all) {
+                          if (c.v) vo[vc.indexOf(c)] = p else ao[ac.indexOf(c)] = p
+                          p += c.bytes
+                      }
+                      out.write(ftyp)
+                      out.write(moov(vo, ao))
+                      val hdr = ByteArray(16); p32(hdr, 0, 1); System.arraycopy("mdat".toByteArray(), 0, hdr, 4, 4); p64(hdr, 8, total + 16)
+                      out.write(hdr)
+                      val buf = ByteArray(1 shl 16)
+                      for (c in all) {
+                          val raf = if (c.v) v.raf else a.raf
+                          raf.seek(c.off)
+                          var left = c.bytes
+                          while (left > 0) {
+                              val r = raf.read(buf, 0, minOf(buf.size.toLong(), left).toInt())
+                              if (r < 0) throw java.io.IOException("file ended early")
+                              out.write(buf, 0, r); left -= r
                           }
                       }
                       out.flush()
