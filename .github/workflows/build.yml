@@ -52,8 +52,8 @@ jobs:
               applicationId 'com.pribadi.easydl'
               minSdk 29
               targetSdk 34
-              versionCode 32
-              versionName '6.8'
+              versionCode 33
+              versionName '6.9'
             }
             compileOptions {
               sourceCompatibility JavaVersion.VERSION_17
@@ -374,6 +374,7 @@ jobs:
               private var thRetried = false
               private var thEmbedTried = false
               private var igRescueTried = false
+              @Volatile private var igWhy = ""
               private var thLoginDone = false
               private var loginSite = ""
               private var fbLast = 0
@@ -535,7 +536,7 @@ jobs:
                       }
                   })
                   status = TextView(this).apply {
-                      text = "Easy Downloader 6.8\nCopy a video link from any website (Threads, X, TikTok, Facebook, Instagram, YouTube or others), then open this app. You can also paste it in the box above.\nSwipe left to see your downloaded files."
+                      text = "Easy Downloader 6.9\nCopy a video link from any website (Threads, X, TikTok, Facebook, Instagram, YouTube or others), then open this app. You can also paste it in the box above.\nSwipe left to see your downloaded files."
                       setPadding(0, dp(8), 0, dp(8))
                   }
                   list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -2261,13 +2262,18 @@ jobs:
                   val code = Regex("instagram\\.com/(?:[^/?#]+/)?(?:p|reels?|tv)/([A-Za-z0-9_-]+)").find(link)?.groupValues?.get(1)
                   Thread {
                       var r: Pair<String, List<Media>> = Pair("", emptyList())
+                      igWhy = ""
                       if (code != null) {
-                          r = try { igGql(code) } catch (e: Exception) { Pair("", emptyList()) }
-                          if (r.second.isEmpty()) r = try { igEmbed(code) } catch (e: Exception) { Pair("", emptyList()) }
-                      }
+                          r = try { igGql(code) } catch (e: Exception) { igWhy = "data: " + (e.message ?: "error").take(60); Pair("", emptyList()) }
+                          if (r.second.isEmpty()) r = try { igEmbed(code) } catch (e: Exception) { igWhy += "; embed: " + (e.message ?: "error").take(60); Pair("", emptyList()) }
+                      } else igWhy = "no post code in link"
                       runOnUiThread {
                           if (my != gen) return@runOnUiThread
-                          if (r.second.isEmpty()) { showLogin("Instagram", link); return@runOnUiThread }
+                          if (r.second.isEmpty()) {
+                              showLogin("Instagram", link)
+                              status.text = "Instagram only shows this post to logged-in viewers." + if (igWhy.isNotEmpty()) "\n($igWhy)" else ""
+                              return@runOnUiThread
+                          }
                           if (r.first.isNotEmpty()) setSrc(r.first, "instagram")
                           if (r.second.any { it.video }) vetThen(my, r.second) else show(r.second)
                       }
@@ -2292,11 +2298,13 @@ jobs:
                   if (ck.isNotEmpty()) c.setRequestProperty("Cookie", ck)
                   c.connectTimeout = 20000
                   c.readTimeout = 30000
-                  if (c.responseCode >= 400) return Pair("", emptyList())
+                  if (c.responseCode >= 400) { igWhy = "data: HTTP ${c.responseCode}"; return Pair("", emptyList()) }
                   val j = JSONObject(c.inputStream.bufferedReader().readText())
                   val n = j.optJSONObject("data")?.let { it.optJSONObject("xdt_shortcode_media") ?: it.optJSONObject("shortcode_media") }
-                      ?: return Pair("", emptyList())
-                  return igNodes(n)
+                  if (n == null) { igWhy = "data: empty"; return Pair("", emptyList()) }
+                  val r = igNodes(n)
+                  if (r.second.isEmpty()) igWhy = "data: no files"
+                  return r
               }
 
               private fun igEmbed(code: String): Pair<String, List<Media>> {
@@ -2318,10 +2326,12 @@ jobs:
                       val l = u.lowercase()
                       if (!(l.contains("cdninstagram.com") || l.contains("fbcdn.net"))) continue
                       if (l.contains("t51.2885-19") || l.contains("s150x150") || l.contains("s320x320") || l.contains("p150x150")) continue
+                      if (l.contains("static.cdninstagram") || l.contains("rsrc.php") || !l.contains("/v/")) continue
                       val name = u.substringBefore("?").substringAfterLast("/")
                       if (l.contains(".mp4")) out.putIfAbsent(name, Media(u, true, "", "https://www.instagram.com/"))
                       else if (l.contains(".jpg") || l.contains(".webp") || l.contains(".heic")) out.putIfAbsent(name, Media(u, false, u, "https://www.instagram.com/"))
                   }
+                  if (out.isEmpty()) igWhy += "; embed: no files"
                   return Pair(user, out.values.take(20).toList())
               }
 
