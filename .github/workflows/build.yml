@@ -52,8 +52,8 @@ jobs:
               applicationId 'com.pribadi.easydl'
               minSdk 29
               targetSdk 34
-              versionCode 33
-              versionName '6.9'
+              versionCode 34
+              versionName '7.0'
             }
             compileOptions {
               sourceCompatibility JavaVersion.VERSION_17
@@ -536,7 +536,7 @@ jobs:
                       }
                   })
                   status = TextView(this).apply {
-                      text = "Easy Downloader 6.9\nCopy a video link from any website (Threads, X, TikTok, Facebook, Instagram, YouTube or others), then open this app. You can also paste it in the box above.\nSwipe left to see your downloaded files."
+                      text = "Easy Downloader 7.0\nCopy a video link from any website (Threads, X, TikTok, Facebook, Instagram, YouTube or others), then open this app. You can also paste it in the box above.\nSwipe left to see your downloaded files."
                       setPadding(0, dp(8), 0, dp(8))
                   }
                   list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -2270,14 +2270,59 @@ jobs:
                       runOnUiThread {
                           if (my != gen) return@runOnUiThread
                           if (r.second.isEmpty()) {
-                              showLogin("Instagram", link)
-                              status.text = "Instagram only shows this post to logged-in viewers." + if (igWhy.isNotEmpty()) "\n($igWhy)" else ""
+                              if (code == null) { igNoLogin(link); return@runOnUiThread }
+                              // open the small "embed" player like a normal browser and catch the files it plays
+                              say("Trying the small Instagram player…")
+                              synchronized(netVideos) { netVideos.clear() }
+                              newWeb(my, UA).loadUrl("https://www.instagram.com/p/$code/embed/captioned/")
+                              handler.postDelayed({ igEmbedPoll(my, 0, link) }, 1500)
                               return@runOnUiThread
                           }
-                          if (r.first.isNotEmpty()) setSrc(r.first, "instagram")
-                          if (r.second.any { it.video }) vetThen(my, r.second) else show(r.second)
+                          igShow(my, r)
                       }
                   }.start()
+              }
+
+              private fun igNoLogin(link: String) {
+                  showLogin("Instagram", link)
+                  status.text = "Instagram only shows this post to logged-in viewers." + if (igWhy.isNotEmpty()) "\n($igWhy)" else ""
+              }
+
+              private fun igShow(my: Int, r: Pair<String, List<Media>>) {
+                  if (r.first.isNotEmpty()) setSrc(r.first, "instagram")
+                  if (r.second.any { it.video }) vetThen(my, r.second) else show(r.second)
+              }
+
+              private fun igEmbedPoll(my: Int, tick: Int, link: String) {
+                  if (my != gen) return
+                  val w = web ?: run { igNoLogin(link); return }
+                  w.evaluateJavascript("(function(){try{var b=document.querySelector('.EmbeddedMediaVideo,.Embed .VideoPlayer,[aria-label=\"Play\"],.PlayButton,.sqdOP');" +
+                      "if(b&&!window.__p){window.__p=1;b.click()}document.querySelectorAll('video').forEach(function(v){v.muted=true;v.play()})}catch(e){}})()", null)
+                  val net = synchronized(netVideos) { ArrayList(netVideos) }
+                  if (net.isNotEmpty() && tick >= 3) {
+                      w.evaluateJavascript("document.documentElement.outerHTML") { h ->
+                          if (my != gen) return@evaluateJavascript
+                          val html = try { JSONArray("[$h]").optString(0) } catch (e: Exception) { "" }
+                          val r = try { igEmbedHtml(html) } catch (e: Exception) { Pair("", emptyList<Media>()) }
+                          if (r.second.any { it.video && it.label == "dash" }) { igShow(my, r); return@evaluateJavascript }
+                          val thumb = r.second.firstOrNull { !it.video }?.url ?: ""
+                          igShow(my, Pair(r.first, listOf(Media(net[0], true, thumb, "https://www.instagram.com/", alts = net.drop(1)))))
+                      }
+                      return
+                  }
+                  if (tick == 8 || tick >= 14) {
+                      w.evaluateJavascript("document.documentElement.outerHTML") { h ->
+                          if (my != gen) return@evaluateJavascript
+                          val html = try { JSONArray("[$h]").optString(0) } catch (e: Exception) { "" }
+                          val r = try { igEmbedHtml(html) } catch (e: Exception) { Pair("", emptyList<Media>()) }
+                          // a photo post shows its photos; a video waits for the player (or uses the video link in the page)
+                          if (r.second.isNotEmpty() && (r.second.any { it.video } || !html.contains("<video") || tick >= 14)) igShow(my, r)
+                          else if (tick >= 14) { igWhy += "; player: no files"; igNoLogin(link) }
+                          else handler.postDelayed({ igEmbedPoll(my, tick + 1, link) }, 1000)
+                      }
+                      return
+                  }
+                  handler.postDelayed({ igEmbedPoll(my, tick + 1, link) }, 1000)
               }
 
               private fun igGql(code: String): Pair<String, List<Media>> {
@@ -2307,8 +2352,10 @@ jobs:
                   return r
               }
 
-              private fun igEmbed(code: String): Pair<String, List<Media>> {
-                  val html = open("https://www.instagram.com/p/$code/embed/captioned/", "", UA).inputStream.bufferedReader().readText()
+              private fun igEmbed(code: String): Pair<String, List<Media>> =
+                  igEmbedHtml(open("https://www.instagram.com/p/$code/embed/captioned/", "", UA).inputStream.bufferedReader().readText())
+
+              private fun igEmbedHtml(html: String): Pair<String, List<Media>> {
                   val raw = Regex("\"contextJSON\":\"((?:[^\"\\\\]|\\\\.)*)\"").find(html)?.groupValues?.get(1)
                   if (raw != null) {
                       try {
